@@ -47,6 +47,7 @@ class CaptureViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val machine = CaptureStateMachine()
+    private val stabilizer = QuadStabilizer()
     private val _ui = MutableStateFlow(CaptureUiState())
     val ui = _ui.asStateFlow()
 
@@ -74,7 +75,9 @@ class CaptureViewModel @Inject constructor(
 
     /** Live preview frame (RGBA) → detector. Returns whether to auto-capture now. */
     fun onPreviewFrame(frame: Bitmap, now: Long = System.currentTimeMillis()): Boolean {
-        val quad = detector.detect(frame)
+        // Stabilize the raw detection so the overlay doesn't flicker and auto-capture
+        // isn't reset by single-frame jitter.
+        val quad = stabilizer.update(detector.detect(frame), now)
         if (quad != null) lastQuadSeenAt = now
         if (lastQuadSeenAt == 0L) lastQuadSeenAt = now
         val auto = _ui.value.autoCapture && !_ui.value.idCardMode

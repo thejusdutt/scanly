@@ -77,6 +77,9 @@ class OpenCvDocumentDetector @Inject constructor() : DocumentDetector {
         frameArea: Double,
         consider: (List<QuadPoint>, Double) -> Unit,
     ) {
+        val cols = binary.cols().toFloat()
+        val rows = binary.rows().toFloat()
+        val margin = 6f
         val contours = ArrayList<MatOfPoint>()
         val hierarchy = Mat()
         Imgproc.findContours(
@@ -99,7 +102,14 @@ class OpenCvDocumentDetector @Inject constructor() : DocumentDetector {
                     val area = Imgproc.contourArea(approx)
                     val convex = Imgproc.isContourConvex(poly)
                     poly.release()
-                    if (convex && area > frameArea * 0.10) {
+                    // A quad with every corner pinned to the image border is the frame
+                    // itself (a threshold-pass artifact), not the page — and it flickers
+                    // against the real page quad if allowed to compete.
+                    val isFrameBorder = approx.toArray().all { p ->
+                        (p.x < margin || p.x > cols - margin) &&
+                            (p.y < margin || p.y > rows - margin)
+                    }
+                    if (convex && !isFrameBorder && area > frameArea * 0.10) {
                         // Rectangularity: how much of its rotated bounding box it fills.
                         val rect = Imgproc.minAreaRect(approx)
                         val rectArea = rect.size.width * rect.size.height
