@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Privacy invariant enforcement for the FOSS flavor.
+
+      Transitive dependencies (e.g. Coil) declare INTERNET / ACCESS_NETWORK_STATE in their
+      own manifests, which would otherwise merge into the app. The FOSS build must be
+      provably offline, so we strip those permissions here. We never load remote images or
+      make network calls, so removal is safe. CI fails the build if INTERNET survives the
+      merge — see .github/workflows/ci.yml.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+
+</manifest>

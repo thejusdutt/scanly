@@ -1,0 +1,47 @@
+<resources>
+    <string name="app_name">Scanly</string>
+
+    <!-- Nav / screens -->
+    <string name="title_library">Documents</string>
+    <string name="title_capture">Scan</string>
+    <string name="title_review">Review</string>
+    <string name="title_document">Document</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_signature">Signature</string>
+
+    <!-- Capture -->
+    <string name="capture">Capture</string>
+    <string name="batch_mode">Batch</string>
+    <string name="auto_capture">Auto</string>
+    <string name="flash">Flash</string>
+    <string name="grid">Grid</string>
+    <string name="hold_steady">Hold steady…</string>
+    <string name="searching">Looking for a document…</string>
+
+    <!-- Filters -->
+    <string name="filter_color">Color</string>
+    <string name="filter_grayscale">Greyscale</string>
+    <string name="filter_bw">B&amp;W</string>
+    <string name="filter_magic">Magic</string>
+
+    <!-- OCR -->
+    <string name="ocr_none">No text</string>
+    <string name="ocr_queued">OCR queued</string>
+    <string name="ocr_done">Text ready</string>
+    <string name="ocr_failed">OCR failed — tap to retry</string>
+    <string name="copy_text">Copy text</string>
+
+    <!-- Export -->
+    <string name="export_pdf">Export PDF</string>
+    <string name="export_searchable">Searchable PDF</string>
+    <string name="share">Share</string>
+
+    <!-- Privacy -->
+    <string name="privacy_title">Privacy</string>
+    <string name="privacy_offline_foss">This build has no internet permission. Nothing you scan can leave this device.</string>
+    <string name="privacy_offline_gplay">Scanning, OCR and PDF creation run on your device. The internet permission is used only when you tap to download a language pack or leave a tip.</string>
+
+    <!-- Permissions -->
+    <string name="camera_permission_rationale">Scanly needs the camera to scan documents. Images are processed entirely on your device.</string>
+    <string name="grant_camera">Grant camera access</string>
+</resources>

@@ -1,0 +1,5 @@
+# Keep the Unix launcher script LF so CI on Linux can execute it.
+gradlew text eol=lf
+*.bat text eol=crlf
+*.traineddata binary
+*.jar binary

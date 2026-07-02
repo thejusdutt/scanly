@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests (both flavors)
+        run: ./gradlew testFossDebugUnitTest testGplayDebugUnitTest
+
+      - name: Assemble
+        run: ./gradlew assembleFossDebug assembleGplayDebug
+
+      # --- Privacy invariant: the FOSS build must never request INTERNET. ---
+      # Match the actual <uses-permission> element, not any substring, so XML comments
+      # that merely mention the permission don't trip the gate. Transitive deps (e.g.
+      # Coil) declare INTERNET; src/foss/AndroidManifest.xml strips it via tools:node.
+      - name: Verify FOSS build is offline (no INTERNET in any merged manifest)
+        run: |
+          FOUND=0
+          while IFS= read -r M; do
+            if grep -oE 'uses-permission[^>]*android\.permission\.INTERNET' "$M" >/dev/null; then
+              echo "::error::FOSS manifest declares INTERNET: $M"
+              FOUND=1
+            fi
+          done < <(find app/build/intermediates/packaged_manifests/fossDebug -name AndroidManifest.xml)
+          if [ "$FOUND" = "1" ]; then exit 1; fi
+          echo "OK: FOSS build is provably offline (no INTERNET uses-permission)."
+
+      - name: Verify GPLAY build does declare INTERNET (ML Kit model fetch / billing)
+        run: |
+          G=$(find app/build/intermediates/packaged_manifests/gplayDebug -name AndroidManifest.xml | head -n1)
+          grep -oE 'uses-permission[^>]*android\.permission\.INTERNET' "$G" >/dev/null \
+            && echo "OK: gplay has INTERNET as expected." \
+            || { echo "::error::gplay is missing INTERNET"; exit 1; }

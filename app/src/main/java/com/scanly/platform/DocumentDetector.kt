@@ -1,0 +1,44 @@
+package com.scanly.platform
+
+import android.graphics.Bitmap
+
+/** A plain 2D point in image-pixel space. Deliberately NOT android.graphics.PointF so the
+ *  quad model (and the capture state machine that uses it) stays free of Android types and
+ *  is testable on the plain JVM. */
+data class QuadPoint(val x: Float, val y: Float)
+
+/**
+ * A detected document boundary, as four corners in source-image pixel coordinates,
+ * ordered top-left, top-right, bottom-right, bottom-left.
+ */
+data class DocumentQuad(
+    val topLeft: QuadPoint,
+    val topRight: QuadPoint,
+    val bottomRight: QuadPoint,
+    val bottomLeft: QuadPoint,
+) {
+    val corners: List<QuadPoint> get() = listOf(topLeft, topRight, bottomRight, bottomLeft)
+
+    companion object {
+        /** Full-frame fallback when nothing is detected. */
+        fun full(width: Int, height: Int) = DocumentQuad(
+            QuadPoint(0f, 0f),
+            QuadPoint(width.toFloat(), 0f),
+            QuadPoint(width.toFloat(), height.toFloat()),
+            QuadPoint(0f, height.toFloat()),
+        )
+    }
+}
+
+/**
+ * Finds the page boundary in a frame. Implemented per flavor:
+ *  - foss  -> OpenCV contour detection ([com.scanly.cv.OpenCvDocumentDetector])
+ *  - gplay -> shared OpenCV detector for the live overlay too (ML Kit's scanner is a
+ *    separate full-screen flow, not a per-frame detector).
+ *
+ * Both run 100% on-device. Used for the live preview overlay and on capture.
+ */
+interface DocumentDetector {
+    /** Detect on a (typically downscaled) preview frame for the live overlay. */
+    fun detect(frame: Bitmap): DocumentQuad?
+}

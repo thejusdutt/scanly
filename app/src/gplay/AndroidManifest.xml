@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      gplay flavor only. INTERNET is added here, NOT in the core manifest, so the
+      `foss` build stays provably offline. Used solely for:
+        - user-initiated OCR language-pack download
+        - ML Kit on-device model fetch (first run)
+        - one-time tip-jar billing (never a subscription)
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.android.vending.BILLING" />
+
+    <application>
+        <!-- Let Play download the ML Kit document-scanner model on demand. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="docscanner" />
+    </application>
+</manifest>

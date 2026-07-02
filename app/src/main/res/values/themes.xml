@@ -1,0 +1,4 @@
+<resources>
+    <!-- Base theme; Compose drives the real Material You color scheme at runtime. -->
+    <style name="Theme.Scanly" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
