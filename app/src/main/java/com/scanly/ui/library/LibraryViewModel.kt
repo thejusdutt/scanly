@@ -55,6 +55,13 @@ class LibraryViewModel @Inject constructor(
 
     fun onQueryChange(q: String) { query.value = q }
 
+    /** Library layout: grid (default) or Adobe-style list rows. */
+    val isGrid = MutableStateFlow(true)
+    fun toggleLayout() { isGrid.value = !isGrid.value }
+
+    fun rename(id: Long, name: String) = viewModelScope.launch { repository.rename(id, name) }
+    fun delete(id: Long) = viewModelScope.launch { repository.deleteDocument(id) }
+
     fun importFromGallery(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {

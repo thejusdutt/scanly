@@ -6,9 +6,11 @@ import com.scanly.platform.QuadPoint
 import org.junit.Test
 
 /**
- * Guards the specific regression that plagues the leading FOSS scanner: auto-capture
- * must NOT exit batch mode. After an auto-capture in batch mode, the machine must return
- * to SEARCHING so the next page can be scanned.
+ * Guards two regressions:
+ *  1. auto-capture must NOT exit continuous scanning (the leading FOSS scanner's bug) —
+ *     after an auto-capture the machine returns to SEARCHING for the next page;
+ *  2. auto-capture must NOT machine-gun the SAME page — within the re-arm cooldown it
+ *     only fires again once the document has left the frame.
  */
 class CaptureStateMachineTest {
 
@@ -27,23 +29,46 @@ class CaptureStateMachineTest {
     }
 
     @Test
-    fun batchMode_returns_to_searching_after_capture() {
+    fun continuous_mode_returns_to_searching_after_capture() {
         val m = CaptureStateMachine(stableHoldMs = 800)
         m.onDetection(quad(), now = 0, autoCapture = true)
         m.onDetection(quad(), now = 900, autoCapture = true) // fires
-        m.afterCapture(batchMode = true)
+        m.afterCapture()
         assertThat(m.state).isEqualTo(CaptureState.SEARCHING)
-
-        // And it can detect + auto-capture the NEXT page without any reset.
-        m.onDetection(quad(), now = 1000, autoCapture = true)
-        assertThat(m.onDetection(quad(), now = 1900, autoCapture = true)).isTrue()
     }
 
     @Test
-    fun nonBatch_ends_capture() {
-        val m = CaptureStateMachine()
-        m.afterCapture(batchMode = false)
-        assertThat(m.state).isEqualTo(CaptureState.CAPTURED)
+    fun same_page_does_not_refire_during_cooldown() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires
+        m.afterCapture()
+        // The SAME page is still lying there, holding perfectly still.
+        m.onDetection(quad(), now = 1000, autoCapture = true)
+        assertThat(m.onDetection(quad(), now = 1900, autoCapture = true)).isFalse()
+    }
+
+    @Test
+    fun next_page_fires_after_document_leaves_frame() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires
+        m.afterCapture()
+        // Page swap: document leaves the frame → machine re-arms immediately.
+        m.onDetection(null, now = 1200, autoCapture = true)
+        m.onDetection(quad(), now = 1400, autoCapture = true)
+        assertThat(m.onDetection(quad(), now = 2300, autoCapture = true)).isTrue()
+    }
+
+    @Test
+    fun refires_after_cooldown_even_if_page_never_left() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires at 900
+        m.afterCapture()
+        m.onDetection(quad(), now = 1000, autoCapture = true)
+        // Past cooldown (900 + 2500) with a stable hold behind it -> fires again.
+        assertThat(m.onDetection(quad(), now = 3500, autoCapture = true)).isTrue()
     }
 
     @Test

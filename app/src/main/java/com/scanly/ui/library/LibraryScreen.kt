@@ -10,8 +10,11 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Folder
@@ -21,6 +24,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +55,7 @@ fun LibraryScreen(
     val query by vm.query.collectAsState()
     val importing by vm.importing.collectAsState()
     val importedDocId by vm.importedDocId.collectAsState()
+    val isGrid by vm.isGrid.collectAsState()
 
     // The system Photo Picker: no storage permission, no gallery access beyond the picks.
     val pickImages = rememberLauncherForActivityResult(
@@ -77,6 +84,12 @@ fun LibraryScreen(
                     ) {
                         Icon(Icons.Default.AddPhotoAlternate, "Import from gallery")
                     }
+                    IconButton(onClick = vm::toggleLayout) {
+                        Icon(
+                            if (isGrid) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                            "Toggle layout",
+                        )
+                    }
                     IconButton(onClick = onSettings) {
                         Icon(Icons.Default.Settings, stringResource(R.string.title_settings))
                     }
@@ -100,7 +113,7 @@ fun LibraryScreen(
             }
             if (documents.isEmpty()) {
                 EmptyState(searching = query.isNotBlank())
-            } else {
+            } else if (isGrid) {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 160.dp),
                     contentPadding = PaddingValues(12.dp),
@@ -110,6 +123,20 @@ fun LibraryScreen(
                 ) {
                     items(documents, key = { it.id }) { doc ->
                         DocumentCard(doc) { onOpenDocument(doc.id) }
+                    }
+                }
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(documents.size, key = { documents[it].id }) { i ->
+                        DocumentRow(
+                            doc = documents[i],
+                            onClick = { onOpenDocument(documents[i].id) },
+                            onRename = { vm.rename(documents[i].id, it) },
+                            onDelete = { vm.delete(documents[i].id) },
+                        )
                     }
                 }
             }
@@ -222,6 +249,91 @@ private fun DocumentCard(doc: DocumentSummary, onClick: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/** Adobe-style file row: thumbnail, name, meta, overflow with quick actions. */
+@Composable
+private fun DocumentRow(
+    doc: DocumentSummary,
+    onClick: () -> Unit,
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+
+    ListItem(
+        leadingContent = {
+            if (doc.thumbnailPath != null) {
+                AsyncImage(
+                    model = doc.thumbnailPath,
+                    contentDescription = doc.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(52.dp, 68.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                )
+            } else {
+                Icon(
+                    Icons.Default.DocumentScanner, null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.outline,
+                )
+            }
+        },
+        headlineContent = {
+            Text(doc.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        supportingContent = {
+            val date = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(doc.updatedAt))
+            Text(
+                buildString {
+                    append(date); append("  ·  "); append(doc.pageCount)
+                    append(if (doc.pageCount == 1) " page" else " pages")
+                    doc.folder?.let { append("  ·  "); append(it) }
+                },
+            )
+        },
+        trailingContent = {
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Default.MoreVert, "More")
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = { showMenu = false; showRename = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        onClick = { showMenu = false; onDelete() },
+                    )
+                }
+            }
+        },
+        modifier = Modifier.clickable(onClick = onClick),
+    )
+
+    if (showRename) {
+        var name by remember { mutableStateOf(doc.name) }
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            title = { Text("Rename document") },
+            text = {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { onRename(name.trim()); showRename = false },
+                    enabled = name.isNotBlank(),
+                ) { Text("Rename") }
+            },
+            dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel") } },
+        )
     }
 }
 

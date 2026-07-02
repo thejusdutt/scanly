@@ -186,8 +186,8 @@ class DocumentRepository @Inject constructor(
     suspend fun getPage(pageId: Long): PageEntity? = dao.getPage(pageId)
 
     suspend fun markOcrQueued(pageId: Long) = dao.setOcrStatus(pageId, OcrStatus.QUEUED)
-    suspend fun setOcrResult(pageId: Long, text: String?, ok: Boolean) =
-        dao.setOcrResult(pageId, if (ok) OcrStatus.DONE else OcrStatus.FAILED, text)
+    suspend fun setOcrResult(pageId: Long, text: String?, status: OcrStatus) =
+        dao.setOcrResult(pageId, status, text)
 
     private suspend fun touch(documentId: Long) =
         dao.touchDocument(documentId, System.currentTimeMillis())

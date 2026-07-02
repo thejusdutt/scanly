@@ -35,16 +35,20 @@ class OcrWorker @AssistedInject constructor(
         val lang = inputData.getString(KEY_LANG) ?: "eng"
         val bitmap = BitmapFactory.decodeFile(page.imagePath)
             ?: run {
-                repository.setOcrResult(pageId, null, ok = false)
+                repository.setOcrResult(pageId, null, com.scanly.data.db.OcrStatus.FAILED)
                 return Result.failure()
             }
 
         return try {
             val result = recognizer.recognize(bitmap, lang)
-            repository.setOcrResult(pageId, result.plainText, ok = !result.isEmpty)
+            // A page with no readable text is NOT a failure (blank page, photo) —
+            // FAILED is reserved for actual errors, so the badge doesn't cry wolf.
+            val status = if (result.isEmpty) com.scanly.data.db.OcrStatus.NONE
+            else com.scanly.data.db.OcrStatus.DONE
+            repository.setOcrResult(pageId, result.plainText.ifBlank { null }, status)
             Result.success()
         } catch (t: Throwable) {
-            repository.setOcrResult(pageId, null, ok = false)
+            repository.setOcrResult(pageId, null, com.scanly.data.db.OcrStatus.FAILED)
             // Retry transient failures a couple of times before giving up.
             if (runAttemptCount < 2) Result.retry() else Result.failure()
         } finally {

@@ -7,7 +7,9 @@ import com.scanly.common.Filter
 import com.scanly.data.db.DocumentWithPages
 import com.scanly.data.repo.DocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -36,4 +38,11 @@ class ReviewViewModel @Inject constructor(
 
     fun movePage(pageId: Long, up: Boolean) =
         viewModelScope.launch { repository.movePage(pageId, up) }
+
+    /** Requested pager index (thumbnail-strip taps); consumed by the screen. */
+    private val _scrollTo = MutableStateFlow<Int?>(null)
+    val scrollTo = _scrollTo.asStateFlow()
+
+    fun requestScroll(index: Int) { _scrollTo.value = index }
+    fun consumeScroll() { _scrollTo.value = null }
 }

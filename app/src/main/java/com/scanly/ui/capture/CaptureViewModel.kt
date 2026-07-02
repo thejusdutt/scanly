@@ -24,12 +24,18 @@ import javax.inject.Inject
 data class CaptureUiState(
     val state: CaptureState = CaptureState.IDLE,
     val liveQuad: DocumentQuad? = null,
-    val batchMode: Boolean = false,
+    /** Analyzer frame dimensions, needed to map quad coords onto the preview view. */
+    val frameWidth: Int = 0,
+    val frameHeight: Int = 0,
+    /** True when no document has been detected for a few seconds (Adobe-style hint). */
+    val noDocumentHint: Boolean = false,
     val autoCapture: Boolean = true,
     val idCardMode: Boolean = false,
     /** In ID mode: true once the front side is captured and we're waiting for the back. */
     val idFrontCaptured: Boolean = false,
     val pageCount: Int = 0,
+    /** Thumbnail of the most recently captured page (Adobe-style capture stack). */
+    val lastPageThumb: String? = null,
     val documentId: Long? = null,
     val finishedDocumentId: Long? = null,
 )
@@ -52,7 +58,6 @@ class CaptureViewModel @Inject constructor(
         }
     }
 
-    fun toggleBatch() = _ui.update { it.copy(batchMode = !it.batchMode) }
     fun toggleAuto() = _ui.update { it.copy(autoCapture = !it.autoCapture) }
 
     fun toggleIdCard() = _ui.update {
@@ -65,12 +70,24 @@ class CaptureViewModel @Inject constructor(
         )
     }
 
+    private var lastQuadSeenAt = 0L
+
     /** Live preview frame (RGBA) → detector. Returns whether to auto-capture now. */
     fun onPreviewFrame(frame: Bitmap, now: Long = System.currentTimeMillis()): Boolean {
         val quad = detector.detect(frame)
+        if (quad != null) lastQuadSeenAt = now
+        if (lastQuadSeenAt == 0L) lastQuadSeenAt = now
         val auto = _ui.value.autoCapture && !_ui.value.idCardMode
         val shouldCapture = machine.onDetection(quad, now, auto)
-        _ui.update { it.copy(liveQuad = quad, state = machine.state) }
+        _ui.update {
+            it.copy(
+                liveQuad = quad,
+                frameWidth = frame.width,
+                frameHeight = frame.height,
+                noDocumentHint = quad == null && now - lastQuadSeenAt > 3000,
+                state = machine.state,
+            )
+        }
         return shouldCapture
     }
 
@@ -89,17 +106,20 @@ class CaptureViewModel @Inject constructor(
             val docId = _ui.value.documentId ?: withContext(Dispatchers.IO) {
                 repository.createDocument(defaultName("Scan"))
             }
-            repository.addPage(docId, fullRes, quad, Filter.COLOR)
+            val pageId = repository.addPage(docId, fullRes, quad, Filter.COLOR)
             fullRes.recycle()
-            machine.afterCapture(_ui.value.batchMode)
+            val thumb = repository.getPage(pageId)?.imagePath
+            // Continuous "keep scanning" flow (like Adobe Scan): stay on the camera;
+            // the user leaves via the thumbnail / check button.
+            machine.afterCapture()
             _ui.update {
                 it.copy(
                     documentId = docId,
                     pageCount = it.pageCount + 1,
+                    lastPageThumb = thumb ?: it.lastPageThumb,
                     state = machine.state,
                 )
             }
-            if (!_ui.value.batchMode) finish()
         }
     }
 
