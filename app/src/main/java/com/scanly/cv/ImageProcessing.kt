@@ -100,6 +100,46 @@ object ImageProcessing {
         return bw
     }
 
+    /**
+     * Prepare a page image for OCR: greyscale, upscale small captures toward ~300 DPI
+     * text size, flatten illumination (division normalization), and boost local
+     * contrast with CLAHE. Returns the processed bitmap and the scale factor applied,
+     * so recognizers can map word boxes back to source-image coordinates.
+     */
+    fun prepareForOcr(src: Bitmap, minWidth: Int = 1800): Pair<Bitmap, Float> {
+        OpenCvInitializer.ensure()
+        val mat = Mat().also { Utils.bitmapToMat(src, it) }
+        val grey = Mat()
+        Imgproc.cvtColor(mat, grey, Imgproc.COLOR_RGBA2GRAY)
+        mat.release()
+
+        // Flatten uneven lighting: divide by a heavily blurred illumination estimate.
+        val blur = Mat()
+        Imgproc.GaussianBlur(grey, blur, Size(0.0, 0.0), 21.0)
+        val flat = Mat()
+        org.opencv.core.Core.divide(grey, blur, flat, 255.0)
+        grey.release(); blur.release()
+
+        // Local contrast (CLAHE is gentler than global equalizeHist for OCR).
+        val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+        clahe.apply(flat, flat)
+
+        // Upscale small images: LSTM Tesseract wants ~30px+ character height.
+        val scale = if (flat.cols() < minWidth) minWidth.toFloat() / flat.cols() else 1f
+        if (scale > 1f) {
+            Imgproc.resize(
+                flat, flat,
+                Size(flat.cols() * scale.toDouble(), flat.rows() * scale.toDouble()),
+                0.0, 0.0, Imgproc.INTER_CUBIC,
+            )
+        }
+
+        val out = Bitmap.createBitmap(flat.cols(), flat.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(flat, out)
+        flat.release()
+        return out to scale
+    }
+
     /** "Magic color": divide by a blurred illumination estimate to flatten shadows. */
     private fun magic(mat: Mat): Mat {
         val rgb = Mat()

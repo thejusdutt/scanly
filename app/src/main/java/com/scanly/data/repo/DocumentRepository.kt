@@ -176,6 +176,11 @@ class DocumentRepository @Inject constructor(
     suspend fun rename(id: Long, name: String) =
         dao.renameDocument(id, name, System.currentTimeMillis())
 
+    fun observeFolders(): Flow<List<String>> = dao.observeFolders()
+
+    suspend fun setFolder(id: Long, folder: String?) =
+        dao.setFolder(id, folder?.trim()?.ifBlank { null })
+
     suspend fun getDocumentWithPages(id: Long): DocumentWithPages? = dao.getDocumentWithPages(id)
 
     suspend fun getPage(pageId: Long): PageEntity? = dao.getPage(pageId)

@@ -25,13 +25,26 @@ class TrainedDataManager @Inject constructor(
 
     fun isAvailable(lang: String): Boolean = File(tessDir, "$lang.traineddata").exists()
 
-    /** Copy a bundled asset language pack out to internal storage if not present. */
+    /**
+     * Copy a bundled asset language pack out to internal storage. Re-copies when the
+     * bundled asset's size differs from the extracted file, so upgrading the app (e.g.
+     * tessdata_fast → tessdata_best) refreshes stale models on existing installs.
+     */
     fun ensureBundled(lang: String = "eng") {
-        if (isAvailable(lang)) return
         val assetName = "tessdata/$lang.traineddata"
+        val target = File(tessDir, "$lang.traineddata")
         runCatching {
+            val assetSize = context.assets.openFd(assetName).use { it.length }
+            if (target.exists() && target.length() == assetSize) return
             context.assets.open(assetName).use { input ->
-                File(tessDir, "$lang.traineddata").outputStream().use { input.copyTo(it) }
+                target.outputStream().use { input.copyTo(it) }
+            }
+        }.onFailure {
+            // Asset may be compressed (openFd fails) — fall back to copy-if-missing.
+            if (!target.exists()) runCatching {
+                context.assets.open(assetName).use { input ->
+                    target.outputStream().use { input.copyTo(it) }
+                }
             }
         }
     }

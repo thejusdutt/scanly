@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 
-enum class ExportAction { SHARE, SAVE_SAF, SHARE_IMAGES }
+enum class ExportAction { SHARE, SAVE_SAF, SHARE_IMAGES, PRINT }
 
 /** Freshly exported files awaiting a screen-side action (share intent or SAF "save as"). */
 data class ExportResult(val files: List<File>, val action: ExportAction)
@@ -65,6 +65,18 @@ class DocumentViewModel @Inject constructor(
 
     fun requestSaveToDevice(searchable: Boolean, password: String?) =
         buildThen(searchable, password, ExportAction.SAVE_SAF)
+
+    fun requestPrint() = buildThen(searchable = true, password = null, action = ExportAction.PRINT)
+
+    val folders: StateFlow<List<String>> =
+        repository.observeFolders()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun setFolder(folder: String?) = viewModelScope.launch {
+        repository.setFolder(documentId, folder)
+        _message.value = if (folder.isNullOrBlank()) "Removed from folder"
+        else "Moved to \"$folder\""
+    }
 
     fun requestShareImages() = viewModelScope.launch {
         _busy.value = true

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -26,10 +27,24 @@ class LibraryViewModel @Inject constructor(
 
     val query = MutableStateFlow("")
 
+    /** null = "All". */
+    val selectedFolder = MutableStateFlow<String?>(null)
+
+    val folders: StateFlow<List<String>> =
+        repository.observeFolders()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val documents: StateFlow<List<DocumentSummary>> =
-        query.flatMapLatest { q ->
-            if (q.isBlank()) repository.observeSummaries() else repository.searchSummaries(q)
+        combine(
+            query.flatMapLatest { q ->
+                if (q.isBlank()) repository.observeSummaries() else repository.searchSummaries(q)
+            },
+            selectedFolder,
+        ) { docs, folder ->
+            if (folder == null) docs else docs.filter { it.folder == folder }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun onFolderSelect(folder: String?) { selectedFolder.value = folder }
 
     private val _importing = MutableStateFlow(false)
     val importing = _importing.asStateFlow()

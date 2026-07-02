@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
@@ -14,17 +15,32 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashAuto
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Grid3x3
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -71,7 +87,14 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
     val lifecycleOwner = LocalLifecycleOwner.current
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val frameConverter = remember { PreviewFrameConverter() }
-    val imageCapture = remember { ImageCapture.Builder().build() }
+    val imageCapture = remember {
+        ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .build()
+    }
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    var flashMode by remember { mutableStateOf(ImageCapture.FLASH_MODE_OFF) }
+    var showGrid by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
@@ -95,7 +118,7 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
         )
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 val previewView = PreviewView(ctx)
@@ -120,7 +143,7 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
                         }
                     }
                     provider.unbindAll()
-                    provider.bindToLifecycle(
+                    camera = provider.bindToLifecycle(
                         lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
                         preview, analysis, imageCapture,
                     )
@@ -130,41 +153,174 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Live boundary overlay (preview coords are normalized in toDownscaledBitmap).
+        // Live boundary overlay (preview coords are normalized in the converter).
         QuadOverlay(ui.liveQuad, stable = ui.state == CaptureState.STABLE)
+        if (showGrid) GridOverlay()
 
-        // Top bar: status + toggles.
+        // ---- Top bar on a scrim ----
         Row(
-            Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(12.dp),
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent),
+                    ),
+                )
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AssistChip(onClick = onCancel, label = { Text("Close") })
-            Text(
-                if (ui.state == CaptureState.STABLE) stringResource(R.string.hold_steady)
-                else stringResource(R.string.searching),
-                color = Color.White,
-            )
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Default.Close, "Close", tint = Color.White)
+            }
+            StatusChip(ui)
             Row {
-                FilterChip(ui.batchMode, onClick = vm::toggleBatch,
-                    label = { Text(stringResource(R.string.batch_mode)) })
-                Spacer(Modifier.width(8.dp))
-                FilterChip(ui.autoCapture, onClick = vm::toggleAuto,
-                    label = { Text(stringResource(R.string.auto_capture)) })
+                IconButton(onClick = {
+                    flashMode = when (flashMode) {
+                        ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
+                        ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
+                        else -> ImageCapture.FLASH_MODE_OFF
+                    }
+                    imageCapture.flashMode = flashMode
+                }) {
+                    Icon(
+                        when (flashMode) {
+                            ImageCapture.FLASH_MODE_ON -> Icons.Default.FlashOn
+                            ImageCapture.FLASH_MODE_AUTO -> Icons.Default.FlashAuto
+                            else -> Icons.Default.FlashOff
+                        },
+                        stringResource(R.string.flash), tint = Color.White,
+                    )
+                }
+                IconButton(onClick = { showGrid = !showGrid }) {
+                    Icon(
+                        Icons.Default.Grid3x3, stringResource(R.string.grid),
+                        tint = if (showGrid) Color(0xFFA7E8BD) else Color.White,
+                    )
+                }
             }
         }
 
-        // Bottom bar: shutter + page count + done.
-        Row(
-            Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(24.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        // ---- Bottom controls on a scrim ----
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
+                    ),
+                )
+                .navigationBarsPadding()
+                .padding(bottom = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("${ui.pageCount}", color = Color.White)
-            Button(onClick = { capture() }, enabled = !capturing) {
-                Text(stringResource(R.string.capture))
+            // Mode chips.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModeChip(stringResource(R.string.batch_mode), ui.batchMode, vm::toggleBatch)
+                ModeChip(stringResource(R.string.auto_capture), ui.autoCapture && !ui.idCardMode,
+                    vm::toggleAuto, enabled = !ui.idCardMode)
+                ModeChip("ID card", ui.idCardMode, vm::toggleIdCard, icon = Icons.Default.Badge)
             }
-            TextButton(onClick = vm::finish, enabled = ui.pageCount > 0) { Text("Done") }
+            Spacer(Modifier.height(14.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 36.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Page counter.
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${ui.pageCount}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Shutter(enabled = !capturing, onClick = ::capture)
+                FilledIconButton(
+                    onClick = vm::finish,
+                    enabled = ui.pageCount > 0,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(Icons.Default.Check, "Done")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusChip(ui: CaptureUiState) {
+    val text = when {
+        ui.idCardMode && !ui.idFrontCaptured -> "ID: capture the FRONT"
+        ui.idCardMode -> "ID: now the BACK"
+        ui.state == CaptureState.STABLE -> stringResource(R.string.hold_steady)
+        else -> stringResource(R.string.searching)
+    }
+    Surface(
+        color = Color.Black.copy(alpha = 0.45f),
+        contentColor = Color.White,
+        shape = CircleShape,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun ModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        label = { Text(label) },
+        leadingIcon = icon?.let { { Icon(it, null, Modifier.size(16.dp)) } },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = Color.Black.copy(alpha = 0.35f),
+            labelColor = Color.White,
+            iconColor = Color.White,
+        ),
+    )
+}
+
+@Composable
+private fun Shutter(enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(76.dp)
+            .clip(CircleShape)
+            .border(4.dp, Color.White, CircleShape)
+            .padding(7.dp)
+            .clip(CircleShape)
+            .background(if (enabled) Color.White else Color.White.copy(alpha = 0.4f))
+            .clickable(enabled = enabled, onClick = onClick),
+    )
+}
+
+@Composable
+private fun GridOverlay() {
+    Canvas(Modifier.fillMaxSize()) {
+        val c = Color.White.copy(alpha = 0.35f)
+        for (i in 1..2) {
+            drawLine(c, Offset(size.width * i / 3f, 0f), Offset(size.width * i / 3f, size.height), 2f)
+            drawLine(c, Offset(0f, size.height * i / 3f), Offset(size.width, size.height * i / 3f), 2f)
         }
     }
 }

@@ -14,6 +14,7 @@ import com.scanly.ui.review.ReviewScreen
 import com.scanly.ui.settings.SettingsScreen
 import com.scanly.ui.signature.PlaceSignatureScreen
 import com.scanly.ui.signature.SignatureScreen
+import com.scanly.ui.viewer.PageViewerScreen
 
 /** Navigation routes. Document/review carry a working-document id. */
 object Routes {
@@ -21,6 +22,7 @@ object Routes {
     const val CAPTURE = "capture?documentId={documentId}"
     const val REVIEW = "review/{documentId}"
     const val DOCUMENT = "document/{documentId}"
+    const val PAGES = "pages/{documentId}?index={index}"
     const val CROP = "crop/{pageId}"
     const val SIGN = "sign/{documentId}"
     const val SIGNATURE = "signature"
@@ -31,6 +33,7 @@ object Routes {
 
     fun review(documentId: Long) = "review/$documentId"
     fun document(documentId: Long) = "document/$documentId"
+    fun pages(documentId: Long, index: Int) = "pages/$documentId?index=$index"
     fun crop(pageId: Long) = "crop/$pageId"
     fun sign(documentId: Long) = "sign/$documentId"
 }
@@ -82,6 +85,19 @@ fun ScanlyApp() {
                 onBack = { nav.popBackStack() },
                 onAddSignature = { nav.navigate(Routes.sign(docId)) },
                 onAddPages = { id -> nav.navigate(Routes.capture(id)) },
+                onOpenPage = { id, index -> nav.navigate(Routes.pages(id, index)) },
+            )
+        }
+        composable(
+            route = Routes.PAGES,
+            arguments = listOf(
+                navArgument("documentId") { type = NavType.LongType },
+                navArgument("index") { type = NavType.IntType; defaultValue = 0 },
+            ),
+        ) {
+            PageViewerScreen(
+                onBack = { nav.popBackStack() },
+                onAdjustCrop = { pageId -> nav.navigate(Routes.crop(pageId)) },
             )
         }
         composable(

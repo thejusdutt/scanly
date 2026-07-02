@@ -34,12 +34,20 @@ class TesseractTextRecognizer @Inject constructor(
         withContext(Dispatchers.Default) {
             trainedData.ensureBundled("eng")
             val lang = if (trainedData.isAvailable(languageCode)) languageCode else "eng"
+
+            // Preprocess: greyscale + illumination flattening + CLAHE + upscale. Word
+            // boxes come back in preprocessed coords → divide by `scale` to map them
+            // onto the original page image (the searchable-PDF layer needs that).
+            val (prepared, scale) = com.scanly.cv.ImageProcessing.prepareForOcr(page)
+
             val tess = TessBaseAPI()
             try {
                 if (!tess.init(trainedData.dataPath.absolutePath, lang)) {
                     return@withContext RecognizedText.EMPTY
                 }
-                tess.setImage(page)
+                tess.setVariable("user_defined_dpi", "300")
+                tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_AUTO
+                tess.setImage(prepared)
                 val plain = tess.getUTF8Text() ?: ""
                 val words = buildList {
                     val iterator = tess.resultIterator ?: return@buildList
@@ -52,8 +60,8 @@ class TesseractTextRecognizer @Inject constructor(
                         add(
                             RecognizedWord(
                                 text,
-                                RectF(r.left.toFloat(), r.top.toFloat(),
-                                    r.right.toFloat(), r.bottom.toFloat()),
+                                RectF(r.left / scale, r.top / scale,
+                                    r.right / scale, r.bottom / scale),
                             ),
                         )
                     } while (iterator.next(level))
@@ -65,6 +73,7 @@ class TesseractTextRecognizer @Inject constructor(
                 RecognizedText.EMPTY
             } finally {
                 tess.recycle()
+                if (prepared !== page) prepared.recycle()
             }
         }
 }

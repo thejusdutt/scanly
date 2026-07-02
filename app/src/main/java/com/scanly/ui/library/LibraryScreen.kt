@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -90,8 +91,13 @@ fun LibraryScreen(
             )
         },
     ) { padding ->
+        val folders by vm.folders.collectAsState()
+        val selectedFolder by vm.selectedFolder.collectAsState()
         Column(Modifier.padding(padding).fillMaxSize()) {
             SearchBarField(query, vm::onQueryChange)
+            if (folders.isNotEmpty()) {
+                FolderChips(folders, selectedFolder, vm::onFolderSelect)
+            }
             if (documents.isEmpty()) {
                 EmptyState(searching = query.isNotBlank())
             } else {
@@ -107,6 +113,34 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FolderChips(
+    folders: List<String>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+) {
+    androidx.compose.foundation.lazy.LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
+            FilterChip(
+                selected = selected == null,
+                onClick = { onSelect(null) },
+                label = { Text("All") },
+            )
+        }
+        items(folders.size) { i ->
+            FilterChip(
+                selected = selected == folders[i],
+                onClick = { onSelect(if (selected == folders[i]) null else folders[i]) },
+                leadingIcon = { Icon(Icons.Outlined.Folder, null, Modifier.size(16.dp)) },
+                label = { Text(folders[i]) },
+            )
         }
     }
 }

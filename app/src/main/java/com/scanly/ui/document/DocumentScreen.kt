@@ -42,6 +42,7 @@ fun DocumentScreen(
     onBack: () -> Unit,
     onAddSignature: () -> Unit,
     onAddPages: (Long) -> Unit,
+    onOpenPage: (Long, Int) -> Unit,
     vm: DocumentViewModel = hiltViewModel(),
 ) {
     val doc by vm.document.collectAsState()
@@ -55,6 +56,7 @@ fun DocumentScreen(
     var showExport by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
+    var showFolder by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var pendingSafFile by remember { mutableStateOf<File?>(null) }
 
@@ -113,6 +115,16 @@ fun DocumentScreen(
                 }
                 context.startActivity(Intent.createChooser(share, "Share pages as images"))
             }
+            ExportAction.PRINT -> {
+                val file = e.files.first()
+                val pm = context.getSystemService(android.content.Context.PRINT_SERVICE)
+                    as android.print.PrintManager
+                pm.print(
+                    file.nameWithoutExtension,
+                    PdfPrintDocumentAdapter(file, file.nameWithoutExtension),
+                    null,
+                )
+            }
         }
         vm.consumeExport()
     }
@@ -149,6 +161,16 @@ fun DocumentScreen(
                                     vm.postMessage("Text copied to clipboard")
                                 }
                             },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Print") },
+                            leadingIcon = { Icon(Icons.Default.Print, null) },
+                            onClick = { showMenu = false; vm.requestPrint() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Move to folder…") },
+                            leadingIcon = { Icon(Icons.Default.Folder, null) },
+                            onClick = { showMenu = false; showFolder = true },
                         )
                         DropdownMenuItem(
                             text = { Text("Rename") },
@@ -197,7 +219,8 @@ fun DocumentScreen(
             modifier = Modifier.padding(padding).fillMaxSize(),
         ) {
             items(pages, key = { it.id }) { page ->
-                PageTile(page)
+                val index = pages.indexOf(page)
+                PageTile(page, onClick = { onOpenPage(documentId, index) })
             }
         }
     }
@@ -223,6 +246,16 @@ fun DocumentScreen(
         )
     }
 
+    if (showFolder) {
+        val folders by vm.folders.collectAsState()
+        FolderDialog(
+            folders = folders,
+            current = doc?.document?.folder,
+            onConfirm = { vm.setFolder(it); showFolder = false },
+            onDismiss = { showFolder = false },
+        )
+    }
+
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -238,6 +271,53 @@ fun DocumentScreen(
             },
         )
     }
+}
+
+@Composable
+private fun FolderDialog(
+    folders: List<String>,
+    current: String?,
+    onConfirm: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(current.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move to folder") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Folder name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (folders.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Existing:", style = MaterialTheme.typography.labelMedium)
+                    folders.forEach { f ->
+                        ListItem(
+                            headlineContent = { Text(f) },
+                            leadingContent = { Icon(Icons.Default.Folder, null) },
+                            modifier = Modifier.clickable { name = f },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name.trim().ifBlank { null }) }) { Text("Move") }
+        },
+        dismissButton = {
+            Row {
+                if (current != null) {
+                    TextButton(onClick = { onConfirm(null) }) { Text("Remove") }
+                }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 @Composable
@@ -329,8 +409,8 @@ private fun ExportSheet(
 }
 
 @Composable
-private fun PageTile(page: PageEntity) {
-    ElevatedCard {
+private fun PageTile(page: PageEntity, onClick: () -> Unit) {
+    ElevatedCard(onClick = onClick) {
         Box(Modifier.fillMaxWidth().aspectRatio(0.75f).clip(RoundedCornerShape(8.dp))) {
             AsyncImage(
                 model = page.imagePath,
