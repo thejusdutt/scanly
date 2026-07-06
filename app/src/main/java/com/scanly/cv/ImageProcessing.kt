@@ -4,10 +4,12 @@ import android.graphics.Bitmap
 import com.scanly.common.Filter
 import com.scanly.platform.DocumentQuad
 import org.opencv.android.Utils
+import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
+import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import kotlin.math.hypot
@@ -48,7 +50,12 @@ object ImageProcessing {
 
         val transform = Imgproc.getPerspectiveTransform(srcPts, dstPts)
         val dst = Mat()
-        Imgproc.warpPerspective(srcMat, dst, transform, Size(outW.toDouble(), outH.toDouble()))
+        // Cubic keeps small text crisp on the one-shot full-res warp; replicate fills
+        // the sliver a corner slightly outside the frame would otherwise paint black.
+        Imgproc.warpPerspective(
+            srcMat, dst, transform, Size(outW.toDouble(), outH.toDouble()),
+            Imgproc.INTER_CUBIC, Core.BORDER_REPLICATE, Scalar.all(0.0),
+        )
 
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(dst, out)
@@ -65,6 +72,7 @@ object ImageProcessing {
             Filter.GREYSCALE -> greyscale(mat)
             Filter.BW -> blackAndWhite(mat)
             Filter.MAGIC -> magic(mat)
+            Filter.WHITEBOARD -> whiteboard(mat)
         }
         val out = Bitmap.createBitmap(result.cols(), result.rows(), Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(result, out)
@@ -138,6 +146,144 @@ object ImageProcessing {
         Utils.matToBitmap(flat, out)
         flat.release()
         return out to scale
+    }
+
+    /**
+     * Whiteboard: flatten glare/shadow (division normalization), push the near-white
+     * board to pure white, and boost saturation so marker strokes stay vivid. Applied
+     * to the FULL frame — whiteboard captures skip boundary cropping by design.
+     */
+    private fun whiteboard(mat: Mat): Mat {
+        val rgb = Mat()
+        Imgproc.cvtColor(mat, rgb, Imgproc.COLOR_RGBA2RGB)
+        val blur = Mat()
+        Imgproc.GaussianBlur(rgb, blur, Size(0.0, 0.0), 41.0)
+        val flat = Mat(rgb.size(), CvType.CV_8UC3)
+        org.opencv.core.Core.divide(rgb, blur, flat, 255.0)
+        rgb.release(); blur.release()
+
+        val hsv = Mat()
+        Imgproc.cvtColor(flat, hsv, Imgproc.COLOR_RGB2HSV)
+        flat.release()
+        val channels = ArrayList<Mat>(3)
+        org.opencv.core.Core.split(hsv, channels)
+        channels[1].convertTo(channels[1], -1, 1.4, 0.0)   // saturation → vivid markers
+        channels[2].convertTo(channels[2], -1, 1.12, -8.0) // value → board to white
+        org.opencv.core.Core.merge(channels, hsv)
+        channels.forEach { it.release() }
+
+        val out = Mat()
+        Imgproc.cvtColor(hsv, out, Imgproc.COLOR_HSV2RGB)
+        hsv.release()
+        return out
+    }
+
+    /**
+     * Brightness/contrast bake. [contrast] multiplies around mid-grey, [brightness] adds:
+     * out = contrast * in + (brightness + 128 * (1 - contrast)). The Compose live preview
+     * uses the SAME formula in a ColorMatrix, so what the user sees is what gets saved.
+     */
+    fun adjust(src: Bitmap, brightness: Float, contrast: Float): Bitmap {
+        OpenCvInitializer.ensure()
+        val mat = Mat().also { Utils.bitmapToMat(src, it) }
+        val rgb = Mat()
+        Imgproc.cvtColor(mat, rgb, Imgproc.COLOR_RGBA2RGB)
+        mat.release()
+        val offset = brightness + 128f * (1f - contrast)
+        rgb.convertTo(rgb, -1, contrast.toDouble(), offset.toDouble())
+        val out = Bitmap.createBitmap(rgb.cols(), rgb.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(rgb, out)
+        rgb.release()
+        return out
+    }
+
+    /** Small-angle deskew: rotate about the center onto a white (paper) canvas. */
+    fun rotateFine(src: Bitmap, degrees: Float): Bitmap {
+        val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+        val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+        val out = Bitmap.createBitmap(rotated.width, rotated.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(out)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        canvas.drawBitmap(rotated, 0f, 0f, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+        if (rotated !== src) rotated.recycle()
+        return out
+    }
+
+    /**
+     * Cleanup eraser: remove the masked region (fingers, stains, handwriting) by
+     * inpainting from the surroundings. [mask] must match [src] in size; any pixel with
+     * alpha or luminance > 0 is treated as "erase this".
+     */
+    fun inpaint(src: Bitmap, mask: Bitmap): Bitmap {
+        OpenCvInitializer.ensure()
+        val srcMat = Mat().also { Utils.bitmapToMat(src, it) }
+        val rgb = Mat()
+        Imgproc.cvtColor(srcMat, rgb, Imgproc.COLOR_RGBA2RGB)
+        srcMat.release()
+
+        val maskRgba = Mat().also { Utils.bitmapToMat(mask, it) }
+        val maskGrey = Mat()
+        Imgproc.cvtColor(maskRgba, maskGrey, Imgproc.COLOR_RGBA2GRAY)
+        maskRgba.release()
+        Imgproc.threshold(maskGrey, maskGrey, 10.0, 255.0, Imgproc.THRESH_BINARY)
+
+        val out = Mat()
+        org.opencv.photo.Photo.inpaint(rgb, maskGrey, out, 6.0, org.opencv.photo.Photo.INPAINT_TELEA)
+        rgb.release(); maskGrey.release()
+
+        val bmp = Bitmap.createBitmap(out.cols(), out.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(out, bmp)
+        out.release()
+        return bmp
+    }
+
+    /** User watermark, baked onto the page (single diagonal or tiled). */
+    data class WatermarkSpec(
+        val text: String,
+        /** Text size as a fraction of page width. */
+        val sizeFrac: Float = 0.10f,
+        /** 0..1 */
+        val opacity: Float = 0.25f,
+        val tiled: Boolean = true,
+        val color: Int = android.graphics.Color.DKGRAY,
+    )
+
+    fun watermark(src: Bitmap, spec: WatermarkSpec): Bitmap {
+        val out = src.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = android.graphics.Canvas(out)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = spec.color
+            alpha = (spec.opacity.coerceIn(0.05f, 1f) * 255).toInt()
+            textSize = out.width * spec.sizeFrac.coerceIn(0.04f, 0.4f)
+            isFakeBoldText = true
+        }
+        val textWidth = paint.measureText(spec.text).coerceAtLeast(1f)
+        canvas.save()
+        canvas.rotate(-30f, out.width / 2f, out.height / 2f)
+        if (spec.tiled) {
+            val stepX = textWidth * 1.6f
+            val stepY = paint.textSize * 5f
+            var row = 0
+            var y = -out.height * 0.5f
+            while (y < out.height * 1.5f) {
+                var x = -out.width * 0.5f + (row % 2) * stepX / 2f
+                while (x < out.width * 1.5f) {
+                    canvas.drawText(spec.text, x, y, paint)
+                    x += stepX
+                }
+                y += stepY
+                row++
+            }
+        } else {
+            canvas.drawText(
+                spec.text,
+                out.width / 2f - textWidth / 2f,
+                out.height / 2f + paint.textSize / 3f,
+                paint,
+            )
+        }
+        canvas.restore()
+        return out
     }
 
     /** "Magic color": divide by a blurred illumination estimate to flatten shadows. */

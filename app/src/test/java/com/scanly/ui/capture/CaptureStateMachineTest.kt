@@ -9,8 +9,11 @@ import org.junit.Test
  * Guards two regressions:
  *  1. auto-capture must NOT exit continuous scanning (the leading FOSS scanner's bug) —
  *     after an auto-capture the machine returns to SEARCHING for the next page;
- *  2. auto-capture must NOT machine-gun the SAME page — within the re-arm cooldown it
- *     only fires again once the document has left the frame.
+ *  2. auto-capture must NOT machine-gun the SAME page — it only fires again once the
+ *     scene actually changes (document leaves the frame, or a clearly different
+ *     placement appears). Time alone never re-arms: a page left lying under the camera
+ *     used to be re-captured every cooldown interval, flooding the document with
+ *     duplicates.
  */
 class CaptureStateMachineTest {
 
@@ -61,14 +64,43 @@ class CaptureStateMachineTest {
     }
 
     @Test
-    fun refires_after_cooldown_even_if_page_never_left() {
+    fun same_unmoved_page_never_refires_no_matter_how_long() {
         val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
         m.onDetection(quad(), now = 0, autoCapture = true)
         m.onDetection(quad(), now = 900, autoCapture = true) // fires at 900
-        m.afterCapture()
+        m.afterCapture(now = 900)
         m.onDetection(quad(), now = 1000, autoCapture = true)
-        // Past cooldown (900 + 2500) with a stable hold behind it -> fires again.
-        assertThat(m.onDetection(quad(), now = 3500, autoCapture = true)).isTrue()
+        // Way past any cooldown: the page just lies there — must NOT re-capture.
+        assertThat(m.onDetection(quad(), now = 3500, autoCapture = true)).isFalse()
+        assertThat(m.onDetection(quad(), now = 60_000, autoCapture = true)).isFalse()
+    }
+
+    @Test
+    fun replacement_page_slid_in_without_emptying_the_frame_fires() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500, rearmJumpPx = 96f)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires at 900
+        m.afterCapture(now = 900)
+        m.onDetection(quad(), now = 1000, autoCapture = true)
+        // A new sheet slides under the camera: every corner jumps far -> re-arms.
+        m.onDetection(quad(dx = 150f), now = 3600, autoCapture = true)
+        assertThat(m.onDetection(quad(dx = 150f), now = 4500, autoCapture = true)).isTrue()
+    }
+
+    @Test
+    fun manual_capture_disarms_auto_for_the_page_still_in_frame() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        // User taps the shutter before the stable hold elapses.
+        m.afterCapture(now = 300)
+        m.onDetection(quad(), now = 400, autoCapture = true)
+        // Without disarming, auto mode re-shoots the same page one hold later.
+        assertThat(m.onDetection(quad(), now = 1300, autoCapture = true)).isFalse()
+        assertThat(m.onDetection(quad(), now = 9000, autoCapture = true)).isFalse()
+        // Swap to a genuinely new page -> normal auto-capture resumes.
+        m.onDetection(null, now = 9100, autoCapture = true)
+        m.onDetection(quad(), now = 9200, autoCapture = true)
+        assertThat(m.onDetection(quad(), now = 10_100, autoCapture = true)).isTrue()
     }
 
     @Test

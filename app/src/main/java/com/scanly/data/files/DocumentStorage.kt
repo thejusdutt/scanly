@@ -48,6 +48,23 @@ class DocumentStorage @Inject constructor(
     fun latestSignature(): File? =
         signaturesDir.listFiles { f -> f.extension == "png" }?.maxByOrNull { it.lastModified() }
 
+    /**
+     * Move a page image file into [targetDocumentId]'s directory (page moves between
+     * documents — merge/split). Returns the new absolute path; falls back to copy+delete
+     * when rename crosses filesystems.
+     */
+    fun movePageFile(path: String, targetDocumentId: Long): String {
+        val src = File(path)
+        val dst = File(docDir(targetDocumentId), src.name)
+        if (src.absolutePath == dst.absolutePath) return path
+        val renamed = runCatching { src.renameTo(dst) }.getOrDefault(false)
+        if (!renamed) {
+            src.copyTo(dst, overwrite = true)
+            src.delete()
+        }
+        return dst.absolutePath
+    }
+
     fun deletePage(path: String) { runCatching { File(path).delete() } }
 
     fun deleteDocument(documentId: Long) { runCatching { docDir(documentId).deleteRecursively() } }

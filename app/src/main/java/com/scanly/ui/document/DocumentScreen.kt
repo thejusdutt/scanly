@@ -3,8 +3,11 @@ package com.scanly.ui.document
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -58,6 +61,30 @@ fun DocumentScreen(
     var showRename by remember { mutableStateOf(false) }
     var showFolder by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showWatermark by remember { mutableStateOf(false) }
+    var showTags by remember { mutableStateOf(false) }
+    /** Page multi-select for split/delete; empty = normal browsing. */
+    var selectedPages by remember { mutableStateOf(setOf<Long>()) }
+
+    // Per-document lock gate: nothing of a locked document renders until the user
+    // passes the device credential/biometric prompt (once per process session).
+    val sessionUnlocked by vm.sessionUnlocked.collectAsState()
+    if (doc?.document?.locked == true && !sessionUnlocked) {
+        val activity = context as? androidx.fragment.app.FragmentActivity
+        val promptUnlock = {
+            activity?.let {
+                com.scanly.ui.security.BiometricUnlock.prompt(it, "Unlock document") {
+                    vm.markUnlocked()
+                }
+            } ?: vm.markUnlocked()
+        }
+        LaunchedEffect(Unit) { promptUnlock() }
+        com.scanly.ui.security.LockGate(
+            title = "This document is locked",
+            onUnlockRequest = { promptUnlock() },
+        )
+        return
+    }
     var pendingSafFile by remember { mutableStateOf<File?>(null) }
 
     // SAF "save as": copy the built PDF into the user-chosen location. This can target
@@ -125,6 +152,39 @@ fun DocumentScreen(
                     null,
                 )
             }
+            ExportAction.SHARE_VCF -> {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", e.files.first(),
+                )
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/x-vcard"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(share, "Share contact"))
+            }
+            ExportAction.SHARE_LONG_IMAGE -> {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", e.files.first(),
+                )
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/jpeg"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(share, "Share long image"))
+            }
+            ExportAction.SHARE_TXT -> {
+                val uri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", e.files.first(),
+                )
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(share, "Share text"))
+            }
         }
         vm.consumeExport()
     }
@@ -135,6 +195,30 @@ fun DocumentScreen(
 
     Scaffold(
         topBar = {
+            if (selectedPages.isNotEmpty()) {
+                TopAppBar(
+                    title = { Text("${selectedPages.size} selected") },
+                    navigationIcon = {
+                        IconButton(onClick = { selectedPages = emptySet() }) {
+                            Icon(Icons.Default.Close, "Clear selection")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = {
+                            vm.extractPages(selectedPages.toList())
+                            selectedPages = emptySet()
+                        }) {
+                            Icon(Icons.Default.CallSplit, "Move to new document")
+                        }
+                        IconButton(onClick = {
+                            vm.deletePages(selectedPages.toList())
+                            selectedPages = emptySet()
+                        }) {
+                            Icon(Icons.Default.Delete, "Delete selected pages")
+                        }
+                    },
+                )
+            } else {
             TopAppBar(
                 title = { Text(doc?.document?.name ?: stringResource(R.string.title_document)) },
                 navigationIcon = {
@@ -168,6 +252,61 @@ fun DocumentScreen(
                             onClick = { showMenu = false; vm.requestPrint() },
                         )
                         DropdownMenuItem(
+                            text = { Text(stringResource(R.string.add_to_contacts)) },
+                            leadingIcon = { Icon(Icons.Default.PersonAdd, null) },
+                            onClick = {
+                                showMenu = false
+                                val contact = vm.parsedContact()
+                                if (contact == null) {
+                                    vm.postMessage("No contact details found — run OCR first")
+                                } else {
+                                    runCatching { context.startActivity(contactInsertIntent(contact)) }
+                                        .onFailure { vm.postMessage("No contacts app available") }
+                                }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.share_vcard)) },
+                            leadingIcon = { Icon(Icons.Default.ContactPage, null) },
+                            onClick = { showMenu = false; vm.shareVCard() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add watermark…") },
+                            leadingIcon = { Icon(Icons.Default.BrandingWatermark, null) },
+                            onClick = { showMenu = false; showWatermark = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share as long image") },
+                            leadingIcon = { Icon(Icons.Default.Panorama, null) },
+                            onClick = { showMenu = false; vm.requestLongImage() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share text (.txt)") },
+                            leadingIcon = { Icon(Icons.Default.Description, null) },
+                            onClick = { showMenu = false; vm.requestText() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Edit tags…") },
+                            leadingIcon = { Icon(Icons.Default.Label, null) },
+                            onClick = { showMenu = false; showTags = true },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (doc?.document?.locked == true) "Remove lock"
+                                    else "Lock document",
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (doc?.document?.locked == true) Icons.Default.LockOpen
+                                    else Icons.Default.Lock,
+                                    null,
+                                )
+                            },
+                            onClick = { showMenu = false; vm.toggleLock() },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Move to folder…") },
                             leadingIcon = { Icon(Icons.Default.Folder, null) },
                             onClick = { showMenu = false; showFolder = true },
@@ -185,6 +324,7 @@ fun DocumentScreen(
                     }
                 },
             )
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
@@ -220,21 +360,56 @@ fun DocumentScreen(
         ) {
             items(pages, key = { it.id }) { page ->
                 val index = pages.indexOf(page)
-                PageTile(page, onClick = { onOpenPage(documentId, index) })
+                PageTile(
+                    page = page,
+                    selected = page.id in selectedPages,
+                    onClick = {
+                        if (selectedPages.isNotEmpty()) {
+                            selectedPages =
+                                if (page.id in selectedPages) selectedPages - page.id
+                                else selectedPages + page.id
+                        } else {
+                            onOpenPage(documentId, index)
+                        }
+                    },
+                    onLongClick = {
+                        selectedPages =
+                            if (page.id in selectedPages) selectedPages - page.id
+                            else selectedPages + page.id
+                    },
+                )
             }
         }
     }
 
+    if (showTags) {
+        TagsDialog(
+            current = doc?.document?.tags.orEmpty(),
+            onConfirm = { csv ->
+                showTags = false
+                vm.setTags(csv.split(',').map(String::trim).filter(String::isNotEmpty))
+            },
+            onDismiss = { showTags = false },
+        )
+    }
+
     if (showExport) {
         ExportSheet(
-            onShare = { searchable, password ->
-                showExport = false; vm.requestShare(searchable, password)
+            onShare = { searchable, password, size, quality ->
+                showExport = false; vm.requestShare(searchable, password, size, quality)
             },
-            onSaveToDevice = { searchable, password ->
-                showExport = false; vm.requestSaveToDevice(searchable, password)
+            onSaveToDevice = { searchable, password, size, quality ->
+                showExport = false; vm.requestSaveToDevice(searchable, password, size, quality)
             },
             onShareImages = { showExport = false; vm.requestShareImages() },
             onDismiss = { showExport = false },
+        )
+    }
+
+    if (showWatermark) {
+        WatermarkDialog(
+            onConfirm = { spec -> showWatermark = false; vm.applyWatermark(spec) },
+            onDismiss = { showWatermark = false },
         )
     }
 
@@ -347,15 +522,21 @@ private fun RenameDialog(current: String, onConfirm: (String) -> Unit, onDismiss
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ExportSheet(
-    onShare: (Boolean, String?) -> Unit,
-    onSaveToDevice: (Boolean, String?) -> Unit,
+    onShare: (Boolean, String?, com.scanly.pdf.PdfPageSize, Float) -> Unit,
+    onSaveToDevice: (Boolean, String?, com.scanly.pdf.PdfPageSize, Float) -> Unit,
     onShareImages: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var searchable by remember { mutableStateOf(true) }
     var password by remember { mutableStateOf("") }
+    var pageSize by remember { mutableStateOf(com.scanly.pdf.PdfPageSize.AUTO) }
+    var quality by remember { mutableStateOf(0.9f) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(bottom = 24.dp)) {
+        Column(
+            Modifier
+                .padding(bottom = 24.dp)
+                .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+        ) {
             Text(
                 "Export PDF",
                 style = MaterialTheme.typography.titleLarge,
@@ -369,6 +550,49 @@ private fun ExportSheet(
                     Switch(checked = searchable, onCheckedChange = { searchable = it })
                 },
             )
+            // Adobe-style page resize presets.
+            Text(
+                "Page size",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            Row(
+                Modifier.padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                com.scanly.pdf.PdfPageSize.entries.forEach { size ->
+                    FilterChip(
+                        selected = pageSize == size,
+                        onClick = { pageSize = size },
+                        label = {
+                            Text(
+                                when (size) {
+                                    com.scanly.pdf.PdfPageSize.AUTO -> "Auto fit"
+                                    com.scanly.pdf.PdfPageSize.A4 -> "A4"
+                                    com.scanly.pdf.PdfPageSize.LETTER -> "Letter"
+                                    com.scanly.pdf.PdfPageSize.LEGAL -> "Legal"
+                                },
+                            )
+                        },
+                    )
+                }
+            }
+            Text(
+                "File size",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            Row(
+                Modifier.padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(selected = quality >= 0.89f, onClick = { quality = 0.9f },
+                    label = { Text("Best") })
+                FilterChip(selected = quality in 0.75f..0.88f, onClick = { quality = 0.8f },
+                    label = { Text("Balanced") })
+                FilterChip(selected = quality < 0.75f, onClick = { quality = 0.62f },
+                    label = { Text("Smallest") })
+            }
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
@@ -383,13 +607,15 @@ private fun ExportSheet(
             ListItem(
                 headlineContent = { Text(stringResource(R.string.share)) },
                 leadingContent = { Icon(Icons.Default.IosShare, null) },
-                modifier = Modifier.fillMaxWidth().clickable { onShare(searchable, password) },
+                modifier = Modifier.fillMaxWidth()
+                    .clickable { onShare(searchable, password, pageSize, quality) },
             )
             ListItem(
                 headlineContent = { Text("Save to device") },
                 supportingContent = { Text("Files, or any cloud app (Drive, Dropbox, Nextcloud…)") },
                 leadingContent = { Icon(Icons.Default.SaveAlt, null) },
-                modifier = Modifier.fillMaxWidth().clickable { onSaveToDevice(searchable, password) },
+                modifier = Modifier.fillMaxWidth()
+                    .clickable { onSaveToDevice(searchable, password, pageSize, quality) },
             )
             ListItem(
                 headlineContent = { Text("Share pages as images") },
@@ -408,10 +634,122 @@ private fun ExportSheet(
     }
 }
 
+/** Custom text watermark: user text, size, opacity, single or tiled. Baked onto pages. */
 @Composable
-private fun PageTile(page: PageEntity, onClick: () -> Unit) {
-    ElevatedCard(onClick = onClick) {
-        Box(Modifier.fillMaxWidth().aspectRatio(0.75f).clip(RoundedCornerShape(8.dp))) {
+private fun WatermarkDialog(
+    onConfirm: (com.scanly.cv.ImageProcessing.WatermarkSpec) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    var sizeFrac by remember { mutableStateOf(0.10f) }
+    var opacity by remember { mutableStateOf(0.25f) }
+    var tiled by remember { mutableStateOf(true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add watermark") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Watermark text") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("Size", style = MaterialTheme.typography.labelMedium)
+                Slider(value = sizeFrac, onValueChange = { sizeFrac = it }, valueRange = 0.05f..0.25f)
+                Text("Opacity", style = MaterialTheme.typography.labelMedium)
+                Slider(value = opacity, onValueChange = { opacity = it }, valueRange = 0.08f..0.6f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = tiled, onCheckedChange = { tiled = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text("Repeat across the page")
+                }
+                Text(
+                    "The watermark is baked into the pages. Changing a page's filter removes it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = text.isNotBlank(),
+                onClick = {
+                    onConfirm(
+                        com.scanly.cv.ImageProcessing.WatermarkSpec(
+                            text = text.trim(),
+                            sizeFrac = sizeFrac,
+                            opacity = opacity,
+                            tiled = tiled,
+                        ),
+                    )
+                },
+            ) { Text("Apply") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * System "new contact" intent pre-filled from a parsed business card. Uses the contacts
+ * app's own insert flow, so Scanly needs no contacts permission and the user reviews
+ * every field before anything is saved.
+ */
+private fun contactInsertIntent(c: com.scanly.common.ContactParser.Contact): Intent =
+    Intent(android.provider.ContactsContract.Intents.Insert.ACTION).apply {
+        type = android.provider.ContactsContract.RawContacts.CONTENT_TYPE
+        c.name?.let { putExtra(android.provider.ContactsContract.Intents.Insert.NAME, it) }
+        c.org?.let { putExtra(android.provider.ContactsContract.Intents.Insert.COMPANY, it) }
+        c.phones.getOrNull(0)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.PHONE, it) }
+        c.phones.getOrNull(1)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.SECONDARY_PHONE, it) }
+        c.phones.getOrNull(2)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.TERTIARY_PHONE, it) }
+        c.emails.getOrNull(0)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.EMAIL, it) }
+        c.emails.getOrNull(1)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.SECONDARY_EMAIL, it) }
+        c.emails.getOrNull(2)
+            ?.let { putExtra(android.provider.ContactsContract.Intents.Insert.TERTIARY_EMAIL, it) }
+        if (c.websites.isNotEmpty()) {
+            val data = ArrayList<android.content.ContentValues>()
+            c.websites.forEach { url ->
+                data.add(
+                    android.content.ContentValues().apply {
+                        put(
+                            android.provider.ContactsContract.Data.MIMETYPE,
+                            android.provider.ContactsContract.CommonDataKinds.Website.CONTENT_ITEM_TYPE,
+                        )
+                        put(android.provider.ContactsContract.CommonDataKinds.Website.URL, url)
+                    },
+                )
+            }
+            putParcelableArrayListExtra(
+                android.provider.ContactsContract.Intents.Insert.DATA, data,
+            )
+        }
+    }
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun PageTile(
+    page: PageEntity,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    ElevatedCard {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.75f)
+                .clip(RoundedCornerShape(8.dp))
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        ) {
             AsyncImage(
                 model = page.imagePath,
                 contentDescription = "Page ${page.orderIndex + 1}",
@@ -419,8 +757,48 @@ private fun PageTile(page: PageEntity, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
             )
             OcrBadge(page.ocrStatus, Modifier.align(Alignment.BottomStart).padding(6.dp))
+            if (selected) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)),
+                )
+                Icon(
+                    Icons.Default.CheckCircle, "Selected",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun TagsDialog(current: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var value by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit tags") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("Tags, comma-separated") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "e.g. receipts, taxes 2026, work",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

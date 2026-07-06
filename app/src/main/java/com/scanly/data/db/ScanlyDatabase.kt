@@ -15,7 +15,7 @@ class Converters {
 
 @Database(
     entities = [DocumentEntity::class, PageEntity::class, PageFts::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

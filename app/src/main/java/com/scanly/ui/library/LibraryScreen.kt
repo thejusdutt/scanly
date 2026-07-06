@@ -3,7 +3,10 @@ package com.scanly.ui.library
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -12,12 +15,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -56,60 +67,137 @@ fun LibraryScreen(
     val importing by vm.importing.collectAsState()
     val importedDocId by vm.importedDocId.collectAsState()
     val isGrid by vm.isGrid.collectAsState()
+    val selection by vm.selection.collectAsState()
+    val sort by vm.sort.collectAsState()
+    val message by vm.message.collectAsState()
+
+    var showMenu by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var confirmMerge by remember { mutableStateOf(false) }
+    var showFolderMove by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
 
     // The system Photo Picker: no storage permission, no gallery access beyond the picks.
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(),
     ) { uris -> vm.importFromGallery(uris) }
 
+    // SAF PDF picker: import any PDF, rendered on-device by PdfBox.
+    val pickPdf = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> vm.importPdfFile(uri) }
+
     LaunchedEffect(importedDocId) {
         importedDocId?.let { vm.consumeImported(); onOpenDocument(it) }
+    }
+    LaunchedEffect(message) {
+        message?.let { snackbar.showSnackbar(it); vm.consumeMessage() }
     }
 
     Scaffold(
         topBar = {
-            LargeTopAppBar(
-                title = { Text(stringResource(R.string.app_name)) },
-                actions = {
-                    if (importing) CircularProgressIndicator(Modifier.size(22.dp))
-                    IconButton(
-                        onClick = {
-                            pickImages.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
-                                ),
+            if (selection.isNotEmpty()) {
+                TopAppBar(
+                    title = { Text("${selection.size} selected") },
+                    navigationIcon = {
+                        IconButton(onClick = vm::clearSelection) {
+                            Icon(Icons.Default.Close, "Clear selection")
+                        }
+                    },
+                    actions = {
+                        IconButton(
+                            onClick = { confirmMerge = true },
+                            enabled = selection.size >= 2,
+                        ) { Icon(Icons.Default.Merge, "Merge documents") }
+                        IconButton(onClick = { showFolderMove = true }) {
+                            Icon(Icons.Default.Folder, "Move to folder")
+                        }
+                        IconButton(onClick = { confirmDelete = true }) {
+                            Icon(Icons.Default.Delete, "Delete selected")
+                        }
+                    },
+                )
+            } else {
+                LargeTopAppBar(
+                    title = { Text(stringResource(R.string.app_name)) },
+                    actions = {
+                        if (importing) CircularProgressIndicator(Modifier.size(22.dp))
+                        IconButton(
+                            onClick = {
+                                pickImages.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            },
+                            enabled = !importing,
+                        ) {
+                            Icon(Icons.Default.AddPhotoAlternate, "Import from gallery")
+                        }
+                        IconButton(onClick = vm::toggleLayout) {
+                            Icon(
+                                if (isGrid) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                                "Toggle layout",
                             )
-                        },
-                        enabled = !importing,
-                    ) {
-                        Icon(Icons.Default.AddPhotoAlternate, "Import from gallery")
-                    }
-                    IconButton(onClick = vm::toggleLayout) {
-                        Icon(
-                            if (isGrid) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
-                            "Toggle layout",
-                        )
-                    }
-                    IconButton(onClick = onSettings) {
-                        Icon(Icons.Default.Settings, stringResource(R.string.title_settings))
-                    }
-                },
-            )
+                        }
+                        IconButton(onClick = onSettings) {
+                            Icon(Icons.Default.Settings, stringResource(R.string.title_settings))
+                        }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "More")
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            Text(
+                                "Sort by",
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
+                            SortItem("Recent first", sort == LibrarySort.RECENT) {
+                                vm.setSort(LibrarySort.RECENT); showMenu = false
+                            }
+                            SortItem("Name A–Z", sort == LibrarySort.NAME) {
+                                vm.setSort(LibrarySort.NAME); showMenu = false
+                            }
+                            SortItem("Oldest first", sort == LibrarySort.OLDEST) {
+                                vm.setSort(LibrarySort.OLDEST); showMenu = false
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Import PDF…") },
+                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
+                                enabled = !importing,
+                                onClick = {
+                                    showMenu = false
+                                    pickPdf.launch(arrayOf("application/pdf"))
+                                },
+                            )
+                        }
+                    },
+                )
+            }
         },
+        snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onScan,
-                icon = { Icon(Icons.Default.DocumentScanner, null) },
-                text = { Text(stringResource(R.string.title_capture)) },
-            )
+            if (selection.isEmpty()) {
+                ExtendedFloatingActionButton(
+                    onClick = onScan,
+                    icon = { Icon(Icons.Default.DocumentScanner, null) },
+                    text = { Text(stringResource(R.string.title_capture)) },
+                )
+            }
         },
     ) { padding ->
         val folders by vm.folders.collectAsState()
         val selectedFolder by vm.selectedFolder.collectAsState()
+        val allTags by vm.allTags.collectAsState()
+        val selectedTag by vm.selectedTag.collectAsState()
         Column(Modifier.padding(padding).fillMaxSize()) {
             SearchBarField(query, vm::onQueryChange)
             if (folders.isNotEmpty()) {
                 FolderChips(folders, selectedFolder, vm::onFolderSelect)
+            }
+            if (allTags.isNotEmpty()) {
+                TagChips(allTags, selectedTag, vm::onTagSelect)
             }
             if (documents.isEmpty()) {
                 EmptyState(searching = query.isNotBlank())
@@ -122,7 +210,15 @@ fun LibraryScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(documents, key = { it.id }) { doc ->
-                        DocumentCard(doc) { onOpenDocument(doc.id) }
+                        DocumentCard(
+                            doc = doc,
+                            selected = doc.id in selection,
+                            onClick = {
+                                if (selection.isNotEmpty()) vm.toggleSelect(doc.id)
+                                else onOpenDocument(doc.id)
+                            },
+                            onLongClick = { vm.toggleSelect(doc.id) },
+                        )
                     }
                 }
             } else {
@@ -131,17 +227,106 @@ fun LibraryScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(documents.size, key = { documents[it].id }) { i ->
+                        val doc = documents[i]
                         DocumentRow(
-                            doc = documents[i],
-                            onClick = { onOpenDocument(documents[i].id) },
-                            onRename = { vm.rename(documents[i].id, it) },
-                            onDelete = { vm.delete(documents[i].id) },
+                            doc = doc,
+                            selected = doc.id in selection,
+                            onClick = {
+                                if (selection.isNotEmpty()) vm.toggleSelect(doc.id)
+                                else onOpenDocument(doc.id)
+                            },
+                            onLongClick = { vm.toggleSelect(doc.id) },
+                            onRename = { vm.rename(doc.id, it) },
+                            onDelete = { vm.delete(doc.id) },
                         )
                     }
                 }
             }
         }
     }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete ${selection.size} document(s)?") },
+            text = { Text("All their pages will be removed from this device. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; vm.deleteSelected() }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (confirmMerge) {
+        val first = documents.firstOrNull { it.id in selection }
+        AlertDialog(
+            onDismissRequest = { confirmMerge = false },
+            title = { Text("Merge ${selection.size} documents?") },
+            text = {
+                Text(
+                    "All pages are appended, in the order shown, into " +
+                        "\"${first?.name ?: "the first document"}\". The other documents are removed.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmMerge = false; vm.mergeSelected() }) { Text("Merge") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmMerge = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showFolderMove) {
+        val folders by vm.folders.collectAsState()
+        var name by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showFolderMove = false },
+            title = { Text("Move ${selection.size} document(s) to folder") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Folder name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    folders.forEach { f ->
+                        ListItem(
+                            headlineContent = { Text(f) },
+                            leadingContent = { Icon(Icons.Outlined.Folder, null) },
+                            modifier = Modifier.clickable { name = f },
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showFolderMove = false
+                    vm.moveSelectedToFolder(name.trim().ifBlank { null })
+                }) { Text("Move") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFolderMove = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SortItem(label: String, selected: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        leadingIcon = {
+            RadioButton(selected = selected, onClick = null)
+        },
+        onClick = onClick,
+    )
 }
 
 @Composable
@@ -173,6 +358,27 @@ private fun FolderChips(
 }
 
 @Composable
+private fun TagChips(
+    tags: List<String>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+) {
+    androidx.compose.foundation.lazy.LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(tags.size) { i ->
+            FilterChip(
+                selected = selected == tags[i],
+                onClick = { onSelect(if (selected == tags[i]) null else tags[i]) },
+                leadingIcon = { Icon(Icons.Outlined.Label, null, Modifier.size(16.dp)) },
+                label = { Text(tags[i]) },
+            )
+        }
+    }
+}
+
+@Composable
 private fun SearchBarField(query: String, onChange: (String) -> Unit) {
     OutlinedTextField(
         value = query,
@@ -185,11 +391,19 @@ private fun SearchBarField(query: String, onChange: (String) -> Unit) {
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DocumentCard(doc: DocumentSummary, onClick: () -> Unit) {
+private fun DocumentCard(
+    doc: DocumentSummary,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     ElevatedCard(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
         Box(
             Modifier
@@ -225,6 +439,28 @@ private fun DocumentCard(doc: DocumentSummary, onClick: () -> Unit) {
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                 )
             }
+            if (doc.locked) {
+                Icon(
+                    Icons.Default.Lock, "Locked",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(18.dp),
+                )
+            }
+            if (selected) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)),
+                )
+                Icon(
+                    Icons.Default.CheckCircle, "Selected",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                )
+            }
         }
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -253,10 +489,13 @@ private fun DocumentCard(doc: DocumentSummary, onClick: () -> Unit) {
 }
 
 /** Adobe-style file row: thumbnail, name, meta, overflow with quick actions. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DocumentRow(
     doc: DocumentSummary,
+    selected: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -264,6 +503,13 @@ private fun DocumentRow(
     var showRename by remember { mutableStateOf(false) }
 
     ListItem(
+        colors = ListItemDefaults.colors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+        ),
         leadingContent = {
             if (doc.thumbnailPath != null) {
                 AsyncImage(
@@ -283,7 +529,16 @@ private fun DocumentRow(
             }
         },
         headlineContent = {
-            Text(doc.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (doc.locked) {
+                    Icon(
+                        Icons.Default.Lock, "Locked",
+                        modifier = Modifier.size(14.dp).padding(end = 2.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(doc.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         },
         supportingContent = {
             val date = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(doc.updatedAt))
@@ -292,7 +547,10 @@ private fun DocumentRow(
                     append(date); append("  ·  "); append(doc.pageCount)
                     append(if (doc.pageCount == 1) " page" else " pages")
                     doc.folder?.let { append("  ·  "); append(it) }
+                    doc.tags?.takeIf { it.isNotBlank() }?.let { append("  ·  #"); append(it) }
                 },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         },
         trailingContent = {
@@ -312,7 +570,7 @@ private fun DocumentRow(
                 }
             }
         },
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
     )
 
     if (showRename) {

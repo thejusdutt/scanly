@@ -9,4 +9,5 @@ enum class Filter {
     GREYSCALE,   // true 8-bit grey (smaller files, legible text)
     BW,          // adaptive-threshold black & white
     MAGIC,       // auto contrast + shadow/illumination removal
+    WHITEBOARD,  // glare/shadow flattened, background forced white, marker colors boosted
 }

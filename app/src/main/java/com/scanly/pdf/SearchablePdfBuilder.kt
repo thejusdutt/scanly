@@ -38,18 +38,22 @@ class SearchablePdfBuilder @Inject constructor(
      * @param pageWords optional per-page OCR words (image-pixel coords). When present and
      *   non-empty, an invisible text layer is laid down for that page.
      * @param password optional user password; when set, the PDF is encrypted (AES-128).
+     * @param pageSize page box preset; AUTO = page box equals the scan image.
+     * @param jpegQuality 0..1 compression of the embedded page images.
      */
     suspend fun build(
         output: File,
         pages: List<PageEntity>,
         pageWords: Map<Long, List<RecognizedWord>> = emptyMap(),
         password: String? = null,
+        pageSize: PdfPageSize = PdfPageSize.AUTO,
+        jpegQuality: Float = 0.9f,
     ): File = withContext(Dispatchers.Default) {
         val doc = PDDocument()
         try {
             for (page in pages.sortedBy { it.orderIndex }) {
                 val bmp = BitmapFactory.decodeFile(page.imagePath) ?: continue
-                addPage(doc, bmp, pageWords[page.id].orEmpty())
+                addPage(doc, bmp, pageWords[page.id].orEmpty(), pageSize, jpegQuality)
                 bmp.recycle()
             }
             if (!password.isNullOrBlank()) {
@@ -65,34 +69,40 @@ class SearchablePdfBuilder @Inject constructor(
         output
     }
 
-    private fun addPage(doc: PDDocument, bmp: Bitmap, words: List<RecognizedWord>) {
-        val pageW = bmp.width.toFloat()
-        val pageH = bmp.height.toFloat()
-        val pdPage = PDPage(PDRectangle(pageW, pageH))
+    private fun addPage(
+        doc: PDDocument,
+        bmp: Bitmap,
+        words: List<RecognizedWord>,
+        pageSize: PdfPageSize,
+        jpegQuality: Float,
+    ) {
+        val p = PageLayout.place(bmp.width.toFloat(), bmp.height.toFloat(), pageSize)
+        val pdPage = PDPage(PDRectangle(p.pageW, p.pageH))
         doc.addPage(pdPage)
 
-        val image = JPEGFactory.createFromImage(doc, bmp, 0.9f)
+        val image = JPEGFactory.createFromImage(doc, bmp, jpegQuality)
         PDPageContentStream(doc, pdPage).use { cs ->
-            // Full-bleed scan image.
-            cs.drawImage(image, 0f, 0f, pageW, pageH)
+            cs.drawImage(image, p.x, p.y, p.drawW, p.drawH)
 
             if (words.isEmpty()) return@use
-            // Invisible, selectable text layer aligned to each word box.
+            // Invisible, selectable text layer aligned to each word box, in the SAME
+            // transform as the drawn image (scaled + centered on the page box).
+            val sx = p.drawW / bmp.width
+            val sy = p.drawH / bmp.height
             val font = PDType1Font.HELVETICA
             for (w in words) {
                 if (w.text.isBlank()) continue
-                val text = w.text
-                val boxH = (w.box.bottom - w.box.top).coerceAtLeast(1f)
+                val boxH = (w.box.bottom - w.box.top).coerceAtLeast(1f) * sy
                 val fontSize = boxH * 0.8f
                 // PDF origin is bottom-left; image coords are top-left → flip Y.
-                val x = w.box.left
-                val y = pageH - w.box.bottom + boxH * 0.15f
+                val x = p.x + w.box.left * sx
+                val y = p.y + (bmp.height - w.box.bottom) * sy + boxH * 0.15f
                 try {
                     cs.beginText()
                     cs.setRenderingMode(RenderingMode.NEITHER) // invisible
                     cs.setFont(font, fontSize)
                     cs.newLineAtOffset(x, y)
-                    cs.showText(sanitize(text))
+                    cs.showText(sanitize(w.text))
                     cs.endText()
                 } catch (_: Throwable) {
                     // Glyph not encodable in Helvetica/WinAnsi — skip this word's text

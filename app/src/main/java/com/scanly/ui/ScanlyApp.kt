@@ -9,6 +9,8 @@ import androidx.navigation.navArgument
 import com.scanly.ui.capture.CaptureScreen
 import com.scanly.ui.crop.CropScreen
 import com.scanly.ui.document.DocumentScreen
+import com.scanly.ui.edit.CleanupScreen
+import com.scanly.ui.edit.MarkupScreen
 import com.scanly.ui.library.LibraryScreen
 import com.scanly.ui.review.ReviewScreen
 import com.scanly.ui.settings.SettingsScreen
@@ -19,22 +21,31 @@ import com.scanly.ui.viewer.PageViewerScreen
 /** Navigation routes. Document/review carry a working-document id. */
 object Routes {
     const val LIBRARY = "library"
-    const val CAPTURE = "capture?documentId={documentId}"
+    const val CAPTURE = "capture?documentId={documentId}&retakePageId={retakePageId}"
     const val REVIEW = "review/{documentId}"
     const val DOCUMENT = "document/{documentId}"
     const val PAGES = "pages/{documentId}?index={index}"
     const val CROP = "crop/{pageId}"
+    const val CLEANUP = "cleanup/{pageId}"
+    const val MARKUP = "markup/{pageId}"
     const val SIGN = "sign/{documentId}"
     const val SIGNATURE = "signature"
     const val SETTINGS = "settings"
 
-    fun capture(documentId: Long? = null) =
-        if (documentId == null) "capture" else "capture?documentId=$documentId"
+    fun capture(documentId: Long? = null, retakePageId: Long? = null): String {
+        val params = buildList {
+            documentId?.let { add("documentId=$it") }
+            retakePageId?.let { add("retakePageId=$it") }
+        }
+        return "capture" + if (params.isEmpty()) "" else "?${params.joinToString("&")}"
+    }
 
     fun review(documentId: Long) = "review/$documentId"
     fun document(documentId: Long) = "document/$documentId"
     fun pages(documentId: Long, index: Int) = "pages/$documentId?index=$index"
     fun crop(pageId: Long) = "crop/$pageId"
+    fun cleanup(pageId: Long) = "cleanup/$pageId"
+    fun markup(pageId: Long) = "markup/$pageId"
     fun sign(documentId: Long) = "sign/$documentId"
 }
 
@@ -52,13 +63,20 @@ fun ScanlyApp() {
         }
         composable(
             route = Routes.CAPTURE,
-            arguments = listOf(navArgument("documentId") {
-                type = NavType.StringType; nullable = true; defaultValue = null
-            }),
+            arguments = listOf(
+                navArgument("documentId") {
+                    type = NavType.StringType; nullable = true; defaultValue = null
+                },
+                navArgument("retakePageId") {
+                    type = NavType.StringType; nullable = true; defaultValue = null
+                },
+            ),
         ) { entry ->
             val docId = entry.arguments?.getString("documentId")?.toLongOrNull()
+            val retakeId = entry.arguments?.getString("retakePageId")?.toLongOrNull()
             CaptureScreen(
                 appendToDocumentId = docId,
+                retakePageId = retakeId,
                 onFinished = { id -> nav.navigate(Routes.review(id)) { popUpTo(Routes.LIBRARY) } },
                 onCancel = { nav.popBackStack() },
             )
@@ -73,6 +91,11 @@ fun ScanlyApp() {
                 onDone = { nav.navigate(Routes.document(docId)) { popUpTo(Routes.LIBRARY) } },
                 onAddMorePages = { nav.navigate(Routes.capture(docId)) },
                 onAdjustCrop = { pageId -> nav.navigate(Routes.crop(pageId)) },
+                onRetake = { pageId ->
+                    nav.navigate(Routes.capture(docId, retakePageId = pageId))
+                },
+                onCleanup = { pageId -> nav.navigate(Routes.cleanup(pageId)) },
+                onMarkup = { pageId -> nav.navigate(Routes.markup(pageId)) },
             )
         }
         composable(
@@ -105,6 +128,18 @@ fun ScanlyApp() {
             arguments = listOf(navArgument("pageId") { type = NavType.LongType }),
         ) {
             CropScreen(onDone = { nav.popBackStack() })
+        }
+        composable(
+            route = Routes.CLEANUP,
+            arguments = listOf(navArgument("pageId") { type = NavType.LongType }),
+        ) {
+            CleanupScreen(onDone = { nav.popBackStack() })
+        }
+        composable(
+            route = Routes.MARKUP,
+            arguments = listOf(navArgument("pageId") { type = NavType.LongType }),
+        ) {
+            MarkupScreen(onDone = { nav.popBackStack() })
         }
         composable(
             route = Routes.SIGN,

@@ -18,11 +18,26 @@
     <string name="hold_steady">Hold steady…</string>
     <string name="searching">Looking for a document…</string>
 
+    <!-- Capture modes -->
+    <string name="qr_hint">Point at a QR code</string>
+    <string name="whiteboard_hint">Whole view is captured — tap the shutter</string>
+    <string name="retake_hint">Retake — the next shot replaces this page</string>
+    <string name="qr_code">QR code</string>
+    <string name="qr_copy">Copy</string>
+    <string name="qr_open">Open</string>
+    <string name="qr_again">Scan again</string>
+    <string name="retake">Retake</string>
+
+    <!-- Contacts (business cards) -->
+    <string name="add_to_contacts">Add to contacts</string>
+    <string name="share_vcard">Share contact (.vcf)</string>
+
     <!-- Filters -->
     <string name="filter_color">Color</string>
     <string name="filter_grayscale">Greyscale</string>
     <string name="filter_bw">B&amp;W</string>
     <string name="filter_magic">Magic</string>
+    <string name="filter_whiteboard">Whiteboard</string>
 
     <!-- OCR -->
     <string name="ocr_none">No text</string>

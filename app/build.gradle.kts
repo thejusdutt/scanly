@@ -118,6 +118,7 @@ dependencies {
 
     // CV / OCR / PDF (core, both flavors)
     implementation(libs.opencv)
+    implementation(libs.zxing.core) // QR decoding, pure Java, Apache-2.0 — foss-safe
     "fossImplementation"(libs.tesseract4android)
     "gplayImplementation"(libs.tesseract4android) // fallback OCR also available in gplay
     implementation(libs.pdfbox.android)

@@ -12,13 +12,17 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -55,12 +59,13 @@ import java.util.concurrent.Executors
 @Composable
 fun CaptureScreen(
     appendToDocumentId: Long?,
+    retakePageId: Long?,
     onFinished: (Long) -> Unit,
     onCancel: () -> Unit,
     vm: CaptureViewModel = hiltViewModel(),
 ) {
     val ui by vm.ui.collectAsState()
-    LaunchedEffect(Unit) { vm.init(appendToDocumentId) }
+    LaunchedEffect(Unit) { vm.init(appendToDocumentId, retakePageId) }
     LaunchedEffect(ui.finishedDocumentId) { ui.finishedDocumentId?.let(onFinished) }
 
     val context = LocalContext.current
@@ -81,18 +86,35 @@ fun CaptureScreen(
         return
     }
 
-    CameraContent(ui = ui, vm = vm, onCancel = onCancel)
+    CameraContent(
+        ui = ui, vm = vm, onCancel = onCancel,
+        appendMode = appendToDocumentId != null,
+    )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: () -> Unit) {
+private fun CameraContent(
+    ui: CaptureUiState,
+    vm: CaptureViewModel,
+    onCancel: () -> Unit,
+    appendMode: Boolean,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val frameConverter = remember { PreviewFrameConverter() }
+    // All three use cases lock to 4:3 so preview, analysis and capture frame the same
+    // scene — quad coordinates then map between streams with a plain uniform scale.
+    val ratio43 = remember {
+        ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            .build()
+    }
     val imageCapture = remember {
         ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setResolutionSelector(ratio43)
             .build()
     }
     var camera by remember { mutableStateOf<Camera?>(null) }
@@ -111,7 +133,7 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    val bmp = image.toBitmapCompat()
+                    val bmp = image.toUprightBitmap()
                     image.close()
                     if (bmp != null) vm.onCaptured(bmp)
                     capturing = false
@@ -128,13 +150,22 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
                     val provider = providerFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
+                    val preview = Preview.Builder()
+                        .setResolutionSelector(ratio43)
+                        .build().also {
+                            it.surfaceProvider = previewView.surfaceProvider
+                        }
                     val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(ratio43)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                        // CameraX rotates the RGBA buffer into display orientation for
+                        // us. Without this, frames arrive sensor-landscape on phones and
+                        // every quad the detector finds lands nowhere near the document
+                        // once QuadOverlay maps it onto the portrait preview.
+                        .setOutputImageRotationEnabled(true)
                         .build()
+                    previewView.display?.rotation?.let { analysis.targetRotation = it }
                     analysis.setAnalyzer(analysisExecutor) { proxy ->
                         // Detection runs synchronously on this single-threaded executor,
                         // so the converter can reuse its bitmaps frame-to-frame.
@@ -158,12 +189,14 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
 
         // Live boundary overlay, mapped with the same FILL_CENTER geometry PreviewView
         // uses, so the outline actually sits on the document edges.
-        QuadOverlay(
-            quad = ui.liveQuad,
-            frameWidth = ui.frameWidth,
-            frameHeight = ui.frameHeight,
-            stable = ui.state == CaptureState.STABLE,
-        )
+        if (ui.mode.usesBoundaryDetection) {
+            QuadOverlay(
+                quad = ui.liveQuad,
+                frameWidth = ui.frameWidth,
+                frameHeight = ui.frameHeight,
+                stable = ui.state == CaptureState.STABLE,
+            )
+        }
         if (showGrid) GridOverlay()
 
         // ---- Top bar on a scrim ----
@@ -208,11 +241,11 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
                         tint = if (showGrid) Color(0xFFA7E8BD) else Color.White,
                     )
                 }
-                IconButton(onClick = vm::toggleAuto, enabled = !ui.idCardMode) {
+                IconButton(onClick = vm::toggleAuto, enabled = ui.mode.autoCapturable) {
                     Icon(
                         Icons.Default.MotionPhotosAuto, stringResource(R.string.auto_capture),
-                        tint = if (ui.autoCapture && !ui.idCardMode) Color(0xFFA7E8BD)
-                        else Color.White.copy(alpha = if (ui.idCardMode) 0.4f else 1f),
+                        tint = if (ui.autoCapture && ui.mode.autoCapturable) Color(0xFFA7E8BD)
+                        else Color.White.copy(alpha = if (ui.mode.autoCapturable) 1f else 0.4f),
                     )
                 }
             }
@@ -232,16 +265,27 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
                 .padding(bottom = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Camera-app style mode selector: the active mode sits highlighted.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ModeLabel("DOCUMENT", selected = !ui.idCardMode) {
-                    if (ui.idCardMode) vm.toggleIdCard()
-                }
-                ModeLabel("ID CARD", selected = ui.idCardMode) {
-                    if (!ui.idCardMode) vm.toggleIdCard()
+            // Camera-app style mode selector: scrollable, the active mode highlighted.
+            // Appending to an existing document only offers page-producing modes that
+            // make sense mid-document; a retake locks the mode entirely.
+            val modes = when {
+                ui.retakePageId != null -> emptyList()
+                appendMode -> listOf(CaptureMode.DOCUMENT, CaptureMode.BOOK, CaptureMode.WHITEBOARD)
+                else -> CaptureMode.entries.toList()
+            }
+            if (modes.size > 1) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                ) {
+                    modes.forEach { mode ->
+                        ModeLabel(modeLabel(mode), selected = ui.mode == mode) {
+                            vm.setMode(mode)
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -282,7 +326,11 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
                         }
                     }
                 }
-                Shutter(enabled = !capturing, onClick = ::capture)
+                if (ui.mode == CaptureMode.QR) {
+                    Spacer(Modifier.size(76.dp)) // QR mode is decode-only, no shutter
+                } else {
+                    Shutter(enabled = !capturing, onClick = ::capture)
+                }
                 FilledIconButton(
                     onClick = vm::finish,
                     enabled = ui.pageCount > 0,
@@ -293,13 +341,75 @@ private fun CameraContent(ui: CaptureUiState, vm: CaptureViewModel, onCancel: ()
             }
         }
     }
+
+    ui.qrResult?.let { result ->
+        QrResultSheet(result = result, onDismiss = vm::dismissQr)
+    }
+}
+
+/** Decoded QR payload: copy it, open it (links), or keep scanning. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun QrResultSheet(result: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val isLink = result.startsWith("http://") || result.startsWith("https://") ||
+        result.startsWith("www.")
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text(stringResource(R.string.qr_code), style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(10.dp))
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(
+                    result,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(result))
+                    onDismiss()
+                }) { Text(stringResource(R.string.qr_copy)) }
+                if (isLink) {
+                    Button(onClick = {
+                        val url = if (result.startsWith("www.")) "https://$result" else result
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(url),
+                                ),
+                            )
+                        }
+                    }) { Text(stringResource(R.string.qr_open)) }
+                }
+                OutlinedButton(onClick = onDismiss) { Text(stringResource(R.string.qr_again)) }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+private fun modeLabel(mode: CaptureMode): String = when (mode) {
+    CaptureMode.DOCUMENT -> "DOCUMENT"
+    CaptureMode.BOOK -> "BOOK"
+    CaptureMode.ID_CARD -> "ID CARD"
+    CaptureMode.WHITEBOARD -> "WHITEBOARD"
+    CaptureMode.BUSINESS_CARD -> "BUSINESS CARD"
+    CaptureMode.QR -> "QR CODE"
 }
 
 @Composable
 private fun StatusChip(ui: CaptureUiState) {
     val text = when {
-        ui.idCardMode && !ui.idFrontCaptured -> "ID: capture the FRONT"
-        ui.idCardMode -> "ID: now the BACK"
+        ui.mode == CaptureMode.QR -> stringResource(R.string.qr_hint)
+        ui.mode == CaptureMode.WHITEBOARD -> stringResource(R.string.whiteboard_hint)
+        ui.mode == CaptureMode.ID_CARD && !ui.idFrontCaptured -> "ID: capture the FRONT"
+        ui.mode == CaptureMode.ID_CARD -> "ID: now the BACK"
+        ui.retakePageId != null && ui.state != CaptureState.STABLE ->
+            stringResource(R.string.retake_hint)
         ui.state == CaptureState.STABLE -> stringResource(R.string.hold_steady)
         ui.noDocumentHint -> "No document found — capture manually"
         else -> stringResource(R.string.searching)
@@ -409,9 +519,16 @@ private fun CameraRationale(onGrant: () -> Unit) {
 
 /**
  * Converts RGBA_8888 ImageProxy frames to downscaled Bitmaps for edge detection,
- * REUSING both the full-size and the scaled bitmap across frames. At 30 fps a
- * fresh full-res ARGB bitmap per frame is ~270 MB/s of garbage; this allocates
- * only when the frame geometry changes.
+ * REUSING the full-size bitmap, the scaled bitmap and the repack buffer across frames.
+ * At 30 fps a fresh full-res ARGB bitmap per frame is ~270 MB/s of garbage; this
+ * allocates only when the frame geometry changes.
+ *
+ * Stride-safe: many devices pad each pixel row to an alignment boundary
+ * (rowStride > width*4), and the final row is allowed to be SHORTER than the stride.
+ * Treating rowStride/pixelStride as the width — the classic shortcut — stretches the
+ * frame and adds a garbage column; bulk-copying stride*height bytes can throw on the
+ * short last row, which silently kills detection on those devices. Rows are repacked
+ * individually instead, and the bitmap is always exactly proxy.width × proxy.height.
  *
  * Not thread-safe by design: it must only be used from the single-threaded
  * analysis executor, and the returned bitmap is only valid until the next call.
@@ -419,34 +536,67 @@ private fun CameraRationale(onGrant: () -> Unit) {
 private class PreviewFrameConverter {
     private var full: Bitmap? = null
     private var scaled: Bitmap? = null
+    private var packed: ByteArray? = null
     private val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
     private val dstRect = android.graphics.Rect()
 
     fun convert(proxy: ImageProxy, targetWidth: Int): Bitmap? = try {
-        val plane = proxy.planes[0]
-        val rowWidth = plane.rowStride / plane.pixelStride
+        val width = proxy.width
         val height = proxy.height
+        val plane = proxy.planes[0]
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val rowBytes = width * 4
 
-        val f = full?.takeIf { it.width == rowWidth && it.height == height }
-            ?: Bitmap.createBitmap(rowWidth, height, Bitmap.Config.ARGB_8888)
+        val f = full?.takeIf { it.width == width && it.height == height }
+            ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 .also { full?.recycle(); full = it }
-        plane.buffer.rewind()
-        f.copyPixelsFromBuffer(plane.buffer)
 
-        val targetHeight = (height * targetWidth.toFloat() / rowWidth).toInt().coerceAtLeast(1)
-        val s = scaled?.takeIf { it.width == targetWidth && it.height == targetHeight }
-            ?: Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-                .also { scaled?.recycle(); scaled = it }
-        dstRect.set(0, 0, targetWidth, targetHeight)
-        android.graphics.Canvas(s).drawBitmap(f, null, dstRect, paint)
-        s
+        if (rowStride == rowBytes && buffer.capacity() >= rowBytes * height) {
+            buffer.rewind()
+            f.copyPixelsFromBuffer(buffer)
+        } else {
+            val p = packed?.takeIf { it.size == rowBytes * height }
+                ?: ByteArray(rowBytes * height).also { packed = it }
+            for (y in 0 until height) {
+                buffer.position(y * rowStride)
+                buffer.get(p, y * rowBytes, rowBytes)
+            }
+            f.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(p))
+        }
+
+        if (width <= targetWidth) {
+            f // analyzer frame is already detection-sized
+        } else {
+            val targetHeight = (height * targetWidth.toFloat() / width).toInt().coerceAtLeast(1)
+            val s = scaled?.takeIf { it.width == targetWidth && it.height == targetHeight }
+                ?: Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                    .also { scaled?.recycle(); scaled = it }
+            dstRect.set(0, 0, targetWidth, targetHeight)
+            android.graphics.Canvas(s).drawBitmap(f, null, dstRect, paint)
+            s
+        }
     } catch (t: Throwable) {
         null
     }
 }
 
-private fun ImageProxy.toBitmapCompat(): Bitmap? = try {
-    toBitmap()
+/**
+ * Full-resolution capture as an upright bitmap. ImageProxy.toBitmap() decodes the JPEG
+ * buffer but ignores its orientation, so a portrait capture comes back sideways —
+ * rotating by rotationDegrees is what makes the saved page (and the detection that
+ * crops it) match what the user saw.
+ */
+private fun ImageProxy.toUprightBitmap(): Bitmap? = try {
+    val raw = toBitmap()
+    val degrees = imageInfo.rotationDegrees
+    if (degrees == 0) {
+        raw
+    } else {
+        val matrix = android.graphics.Matrix().apply { postRotate(degrees.toFloat()) }
+        Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+            .also { if (it !== raw) raw.recycle() }
+    }
 } catch (t: Throwable) {
     null
 }

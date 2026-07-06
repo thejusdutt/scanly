@@ -8,7 +8,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -44,6 +46,31 @@ fun SettingsScreen(
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
+            // --- Security ---
+            SectionHeader("Security")
+            val appLock by vm.appLockEnabled.collectAsState()
+            ListItem(
+                leadingContent = { Icon(Icons.Default.Fingerprint, null) },
+                headlineContent = { Text("App lock") },
+                supportingContent = {
+                    Text("Require your screen lock (biometric or PIN) to open Scanly")
+                },
+                trailingContent = {
+                    Switch(checked = appLock, onCheckedChange = vm::setAppLock)
+                },
+            )
+            ListItem(
+                leadingContent = { Icon(Icons.Default.Shield, null) },
+                headlineContent = { Text("Encryption at rest") },
+                supportingContent = {
+                    Text(
+                        "The document database — names, tags and all recognized text — is " +
+                            "encrypted with SQLCipher using a random key held in this " +
+                            "device's hardware keystore. Always on.",
+                    )
+                },
+            )
+
             // --- Privacy ---
             SectionHeader("Privacy")
             ListItem(

@@ -39,6 +39,13 @@ data class DocumentQuad(
  * Both run 100% on-device. Used for the live preview overlay and on capture.
  */
 interface DocumentDetector {
-    /** Detect on a (typically downscaled) preview frame for the live overlay. */
-    fun detect(frame: Bitmap): DocumentQuad?
+    /**
+     * Detect the page boundary in [frame] — a live preview frame or a full-resolution
+     * capture (implementations normalize the working size internally).
+     *
+     * @param prior a quad the caller already trusts, in [frame] pixel coordinates —
+     *   e.g. the stabilized live-overlay quad at capture time. Candidates near it get
+     *   a score boost so the final crop matches what the user was shown.
+     */
+    fun detect(frame: Bitmap, prior: DocumentQuad? = null): DocumentQuad?
 }

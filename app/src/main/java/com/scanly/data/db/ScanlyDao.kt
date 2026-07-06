@@ -19,6 +19,8 @@ data class DocumentSummary(
     val id: Long,
     val name: String,
     val folder: String?,
+    val tags: String?,
+    val locked: Boolean,
     val updatedAt: Long,
     val pageCount: Int,
     val thumbnailPath: String?,
@@ -49,7 +51,8 @@ interface ScanlyDao {
 
     @Query(
         """
-        SELECT d.id AS id, d.name AS name, d.folder AS folder, d.updatedAt AS updatedAt,
+        SELECT d.id AS id, d.name AS name, d.folder AS folder, d.tags AS tags,
+            d.locked AS locked, d.updatedAt AS updatedAt,
             (SELECT COUNT(*) FROM pages p WHERE p.documentId = d.id) AS pageCount,
             (SELECT p.imagePath FROM pages p WHERE p.documentId = d.id
                 ORDER BY p.orderIndex LIMIT 1) AS thumbnailPath,
@@ -60,6 +63,15 @@ interface ScanlyDao {
         """,
     )
     fun observeSummaries(): Flow<List<DocumentSummary>>
+
+    @Query("UPDATE documents SET tags = :tags WHERE id = :id")
+    suspend fun setTags(id: Long, tags: String?)
+
+    @Query("UPDATE documents SET locked = :locked WHERE id = :id")
+    suspend fun setLocked(id: Long, locked: Boolean)
+
+    @Query("SELECT tags FROM documents WHERE tags IS NOT NULL AND tags != ''")
+    fun observeTagCsvs(): Flow<List<String>>
 
     @Query("SELECT DISTINCT folder FROM documents WHERE folder IS NOT NULL AND folder != '' ORDER BY folder")
     fun observeFolders(): Flow<List<String>>
@@ -112,7 +124,8 @@ interface ScanlyDao {
 
     @Query(
         """
-        SELECT DISTINCT d.id AS id, d.name AS name, d.folder AS folder, d.updatedAt AS updatedAt,
+        SELECT DISTINCT d.id AS id, d.name AS name, d.folder AS folder, d.tags AS tags,
+            d.locked AS locked, d.updatedAt AS updatedAt,
             (SELECT COUNT(*) FROM pages p WHERE p.documentId = d.id) AS pageCount,
             (SELECT p.imagePath FROM pages p WHERE p.documentId = d.id
                 ORDER BY p.orderIndex LIMIT 1) AS thumbnailPath,

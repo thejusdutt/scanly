@@ -13,6 +13,10 @@ data class DocumentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val folder: String? = null,
+    /** Comma-separated user tags (CamScanner-style labels), or null. */
+    val tags: String? = null,
+    /** Requires biometric/credential unlock to open (per-document lock). */
+    val locked: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )
