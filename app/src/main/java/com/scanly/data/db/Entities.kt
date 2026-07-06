@@ -33,6 +33,13 @@ data class PageEntity(
     val imagePath: String,
     /** Original capture, kept for re-cropping. */
     val originalPath: String?,
+    /**
+     * The crop applied to [originalPath], serialized via DocumentQuad.serialize().
+     * Null when the original is already flat (book halves, whiteboard, imports) or for
+     * rows predating this column. Filter changes re-warp with this quad, so switching
+     * filters no longer discards the crop.
+     */
+    val cropQuad: String? = null,
     val filter: Filter = Filter.COLOR,
     val rotationDeg: Int = 0,
     val ocrStatus: OcrStatus = OcrStatus.NONE,

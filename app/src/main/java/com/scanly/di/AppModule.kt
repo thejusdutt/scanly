@@ -26,6 +26,14 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+/** v2 → v3: persist each page's crop so filter changes can re-warp the original
+ *  instead of un-cropping the page. Legacy rows stay null (crop unknown). */
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pages ADD COLUMN cropQuad TEXT")
+    }
+}
+
 /**
  * Core app bindings shared by both flavors. Flavor-specific bindings (detector, OCR,
  * tip jar) live in FossModule / GplayModule.
@@ -49,7 +57,7 @@ object AppModule {
         // on upgrade, so there is deliberately NO destructive fallback.
         return Room.databaseBuilder(context, ScanlyDatabase::class.java, "scanly.db")
             .openHelperFactory(SupportOpenHelperFactory(passphrase))
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
     }
 

@@ -4,10 +4,14 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.fragment.app.FragmentActivity
+import com.scanly.data.prefs.AppearancePrefs
 import com.scanly.data.prefs.SecurityPrefs
+import com.scanly.data.prefs.ThemeMode
 import com.scanly.ui.ScanlyApp as ScanlyUi
 import com.scanly.ui.security.BiometricUnlock
 import com.scanly.ui.security.LockGate
@@ -23,6 +27,7 @@ import javax.inject.Inject
 class MainActivity : FragmentActivity() {
 
     @Inject lateinit var securityPrefs: SecurityPrefs
+    @Inject lateinit var appearancePrefs: AppearancePrefs
 
     private val locked = mutableStateOf(false)
     private var backgroundedAt = 0L
@@ -32,7 +37,16 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         locked.value = securityPrefs.appLockEnabled.value
         setContent {
-            ScanlyTheme {
+            val themeMode by appearancePrefs.themeMode.collectAsState()
+            val dynamicColor by appearancePrefs.dynamicColor.collectAsState()
+            ScanlyTheme(
+                darkTheme = when (themeMode) {
+                    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                    ThemeMode.LIGHT -> false
+                    ThemeMode.DARK -> true
+                },
+                dynamicColor = dynamicColor,
+            ) {
                 val isLocked by locked
                 if (isLocked) {
                     LockGate(title = "Scanly is locked", onUnlockRequest = ::unlock)

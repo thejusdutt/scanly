@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -16,13 +17,27 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,11 +57,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -54,7 +72,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.scanly.R
 import com.scanly.platform.DocumentQuad
+import com.scanly.ui.common.rememberHaptics
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 @Composable
 fun CaptureScreen(
@@ -118,9 +139,25 @@ private fun CameraContent(
             .build()
     }
     var camera by remember { mutableStateOf<Camera?>(null) }
+    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
     var flashMode by remember { mutableStateOf(ImageCapture.FLASH_MODE_OFF) }
     var showGrid by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
+
+    val haptics = rememberHaptics()
+    val scope = rememberCoroutineScope()
+    // Shutter feedback: a brief white flash + haptic on every capture, manual or auto —
+    // without it, auto-capture fires with no confirmation that anything happened.
+    val flashAlpha = remember { Animatable(0f) }
+    // Tap-to-focus indicator.
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    val focusAlpha = remember { Animatable(0f) }
+    LaunchedEffect(focusPoint) {
+        if (focusPoint != null) {
+            focusAlpha.snapTo(1f)
+            focusAlpha.animateTo(0f, tween(durationMillis = 500, delayMillis = 600))
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose { analysisExecutor.shutdown() }
@@ -133,6 +170,11 @@ private fun CameraContent(
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
+                    haptics.confirm()
+                    scope.launch {
+                        flashAlpha.snapTo(0.65f)
+                        flashAlpha.animateTo(0f, tween(240))
+                    }
                     val bmp = image.toUprightBitmap()
                     image.close()
                     if (bmp != null) vm.onCaptured(bmp)
@@ -146,7 +188,7 @@ private fun CameraContent(
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
-                val previewView = PreviewView(ctx)
+                val previewView = PreviewView(ctx).also { previewViewRef = it }
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
                     val provider = providerFuture.get()
@@ -187,6 +229,24 @@ private fun CameraContent(
             modifier = Modifier.fillMaxSize(),
         )
 
+        // Tap-to-focus: taps that no control above claims land here. PreviewView and
+        // this layer share the same box, so view and compose coordinates match 1:1.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(camera) {
+                    detectTapGestures { pos ->
+                        val cam = camera ?: return@detectTapGestures
+                        val pv = previewViewRef ?: return@detectTapGestures
+                        val point = pv.meteringPointFactory.createPoint(pos.x, pos.y)
+                        cam.cameraControl.startFocusAndMetering(
+                            FocusMeteringAction.Builder(point).build(),
+                        )
+                        focusPoint = pos
+                    }
+                },
+        )
+
         // Live boundary overlay, mapped with the same FILL_CENTER geometry PreviewView
         // uses, so the outline actually sits on the document edges.
         if (ui.mode.usesBoundaryDetection) {
@@ -198,6 +258,31 @@ private fun CameraContent(
             )
         }
         if (showGrid) GridOverlay()
+
+        // Focus ring at the last tap point.
+        focusPoint?.takeIf { focusAlpha.value > 0f }?.let { p ->
+            Box(
+                Modifier
+                    .offset {
+                        IntOffset(
+                            (p.x - 32.dp.toPx()).roundToInt(),
+                            (p.y - 32.dp.toPx()).roundToInt(),
+                        )
+                    }
+                    .size(64.dp)
+                    .graphicsLayer { alpha = focusAlpha.value }
+                    .border(2.dp, Color.White, CircleShape),
+            )
+        }
+
+        // Capture flash.
+        if (flashAlpha.value > 0f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = flashAlpha.value)),
+            )
+        }
 
         // ---- Top bar on a scrim ----
         Row(
@@ -274,15 +359,21 @@ private fun CameraContent(
                 else -> CaptureMode.entries.toList()
             }
             if (modes.size > 1) {
-                Row(
+                val modeListState = rememberLazyListState()
+                LaunchedEffect(ui.mode) {
+                    val i = modes.indexOf(ui.mode)
+                    if (i >= 0) modeListState.animateScrollToItem(i)
+                }
+                LazyRow(
+                    state = modeListState,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
                 ) {
-                    modes.forEach { mode ->
+                    items(modes.size) { i ->
+                        val mode = modes[i]
                         ModeLabel(modeLabel(mode), selected = ui.mode == mode) {
+                            haptics.tick()
                             vm.setMode(mode)
                         }
                     }
@@ -295,8 +386,22 @@ private fun CameraContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // Adobe-style capture stack: last page thumbnail + count badge;
-                // tapping it finishes the scan and opens review.
-                Box(Modifier.size(52.dp)) {
+                // tapping it finishes the scan and opens review. Pops when a page lands.
+                val thumbScale = remember { Animatable(1f) }
+                LaunchedEffect(ui.pageCount) {
+                    if (ui.pageCount > 0) {
+                        thumbScale.snapTo(1.18f)
+                        thumbScale.animateTo(
+                            1f,
+                            spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                        )
+                    }
+                }
+                Box(
+                    Modifier
+                        .size(52.dp)
+                        .graphicsLayer { scaleX = thumbScale.value; scaleY = thumbScale.value },
+                ) {
                     if (ui.lastPageThumb != null) {
                         AsyncImage(
                             model = ui.lastPageThumb,
@@ -329,7 +434,7 @@ private fun CameraContent(
                 if (ui.mode == CaptureMode.QR) {
                     Spacer(Modifier.size(76.dp)) // QR mode is decode-only, no shutter
                 } else {
-                    Shutter(enabled = !capturing, onClick = ::capture)
+                    Shutter(enabled = !capturing, capturing = capturing, onClick = ::capture)
                 }
                 FilledIconButton(
                     onClick = vm::finish,
@@ -419,11 +524,21 @@ private fun StatusChip(ui: CaptureUiState) {
         contentColor = Color.White,
         shape = CircleShape,
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-        )
+        // Crossfade guidance changes so the chip doesn't hard-flicker between states.
+        AnimatedContent(
+            targetState = text,
+            transitionSpec = {
+                (fadeIn(tween(180)) + slideInVertically { it / 3 })
+                    .togetherWith(fadeOut(tween(180)) + slideOutVertically { -it / 3 })
+            },
+            label = "captureStatus",
+        ) { t ->
+            Text(
+                t,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            )
+        }
     }
 }
 
@@ -445,17 +560,35 @@ private fun ModeLabel(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Shutter(enabled: Boolean, onClick: () -> Unit) {
+private fun Shutter(enabled: Boolean, capturing: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.88f else 1f, label = "shutterScale")
     Box(
         Modifier
             .size(76.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
             .border(4.dp, Color.White, CircleShape)
             .padding(7.dp)
             .clip(CircleShape)
             .background(if (enabled) Color.White else Color.White.copy(alpha = 0.4f))
-            .clickable(enabled = enabled, onClick = onClick),
-    )
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (capturing) {
+            CircularProgressIndicator(
+                Modifier.size(30.dp),
+                color = Color.Black.copy(alpha = 0.55f),
+                strokeWidth = 3.dp,
+            )
+        }
+    }
 }
 
 @Composable

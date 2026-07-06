@@ -1,5 +1,15 @@
 package com.scanly.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -49,11 +59,31 @@ object Routes {
     fun sign(documentId: Long) = "sign/$documentId"
 }
 
+/** One duration/easing pair for every navigation animation, so screens feel related. */
+private fun <T> navTween() = tween<T>(durationMillis = 320, easing = FastOutSlowInEasing)
+
 @Composable
 fun ScanlyApp() {
     val nav = rememberNavController()
 
-    NavHost(navController = nav, startDestination = Routes.LIBRARY) {
+    // Shared-axis style transitions: forward slides in from the right, back returns
+    // from the left. Camera and viewer override this below with their own idioms.
+    NavHost(
+        navController = nav,
+        startDestination = Routes.LIBRARY,
+        enterTransition = {
+            slideInHorizontally(navTween()) { it / 4 } + fadeIn(navTween())
+        },
+        exitTransition = {
+            slideOutHorizontally(navTween()) { -it / 4 } + fadeOut(navTween())
+        },
+        popEnterTransition = {
+            slideInHorizontally(navTween()) { -it / 4 } + fadeIn(navTween())
+        },
+        popExitTransition = {
+            slideOutHorizontally(navTween()) { it / 4 } + fadeOut(navTween())
+        },
+    ) {
         composable(Routes.LIBRARY) {
             LibraryScreen(
                 onScan = { nav.navigate(Routes.capture()) },
@@ -71,6 +101,12 @@ fun ScanlyApp() {
                     type = NavType.StringType; nullable = true; defaultValue = null
                 },
             ),
+            // Camera modal: slides up over the app, drops back down on cancel, and
+            // simply fades under Review once a scan finishes.
+            enterTransition = { slideInVertically(navTween()) { it } },
+            exitTransition = { fadeOut(navTween()) },
+            popEnterTransition = { fadeIn(navTween()) },
+            popExitTransition = { slideOutVertically(navTween()) { it } },
         ) { entry ->
             val docId = entry.arguments?.getString("documentId")?.toLongOrNull()
             val retakeId = entry.arguments?.getString("retakePageId")?.toLongOrNull()
@@ -117,6 +153,9 @@ fun ScanlyApp() {
                 navArgument("documentId") { type = NavType.LongType },
                 navArgument("index") { type = NavType.IntType; defaultValue = 0 },
             ),
+            // Full-screen viewer: grows out of the tapped page, shrinks back on exit.
+            enterTransition = { fadeIn(navTween()) + scaleIn(navTween(), initialScale = 0.92f) },
+            popExitTransition = { fadeOut(navTween()) + scaleOut(navTween(), targetScale = 0.92f) },
         ) {
             PageViewerScreen(
                 onBack = { nav.popBackStack() },

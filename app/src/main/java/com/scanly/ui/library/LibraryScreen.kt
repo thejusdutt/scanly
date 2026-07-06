@@ -3,6 +3,13 @@ package com.scanly.ui.library
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,7 +18,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AddPhotoAlternate
@@ -42,15 +52,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.scanly.R
 import com.scanly.data.db.DocumentSummary
+import com.scanly.ui.common.rememberHaptics
 import java.text.DateFormat
 import java.util.Date
 
@@ -94,9 +108,18 @@ fun LibraryScreen(
         message?.let { snackbar.showSnackbar(it); vm.consumeMessage() }
     }
 
+    val haptics = rememberHaptics()
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            if (selection.isNotEmpty()) {
+            AnimatedContent(
+                targetState = selection.isNotEmpty(),
+                transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(200)) },
+                label = "libraryTopBar",
+            ) { selecting ->
+            if (selecting) {
                 TopAppBar(
                     title = { Text("${selection.size} selected") },
                     navigationIcon = {
@@ -120,8 +143,8 @@ fun LibraryScreen(
             } else {
                 LargeTopAppBar(
                     title = { Text(stringResource(R.string.app_name)) },
+                    scrollBehavior = scrollBehavior,
                     actions = {
-                        if (importing) CircularProgressIndicator(Modifier.size(22.dp))
                         IconButton(
                             onClick = {
                                 pickImages.launch(
@@ -175,6 +198,7 @@ fun LibraryScreen(
                     },
                 )
             }
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
@@ -192,6 +216,9 @@ fun LibraryScreen(
         val allTags by vm.allTags.collectAsState()
         val selectedTag by vm.selectedTag.collectAsState()
         Column(Modifier.padding(padding).fillMaxSize()) {
+            if (importing) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
             SearchBarField(query, vm::onQueryChange)
             if (folders.isNotEmpty()) {
                 FolderChips(folders, selectedFolder, vm::onFolderSelect)
@@ -200,7 +227,18 @@ fun LibraryScreen(
                 TagChips(allTags, selectedTag, vm::onTagSelect)
             }
             if (documents.isEmpty()) {
-                EmptyState(searching = query.isNotBlank())
+                EmptyState(
+                    filtering = query.isNotBlank() || selectedFolder != null || selectedTag != null,
+                    onScan = onScan,
+                    onImportPhotos = {
+                        pickImages.launch(
+                            PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                    onImportPdf = { pickPdf.launch(arrayOf("application/pdf")) },
+                )
             } else if (isGrid) {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 160.dp),
@@ -217,7 +255,8 @@ fun LibraryScreen(
                                 if (selection.isNotEmpty()) vm.toggleSelect(doc.id)
                                 else onOpenDocument(doc.id)
                             },
-                            onLongClick = { vm.toggleSelect(doc.id) },
+                            onLongClick = { haptics.longPress(); vm.toggleSelect(doc.id) },
+                            modifier = Modifier.animateItem(),
                         )
                     }
                 }
@@ -235,9 +274,10 @@ fun LibraryScreen(
                                 if (selection.isNotEmpty()) vm.toggleSelect(doc.id)
                                 else onOpenDocument(doc.id)
                             },
-                            onLongClick = { vm.toggleSelect(doc.id) },
+                            onLongClick = { haptics.longPress(); vm.toggleSelect(doc.id) },
                             onRename = { vm.rename(doc.id, it) },
                             onDelete = { vm.delete(doc.id) },
+                            modifier = Modifier.animateItem(),
                         )
                     }
                 }
@@ -248,7 +288,12 @@ fun LibraryScreen(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete ${selection.size} document(s)?") },
+            title = {
+                Text(
+                    if (selection.size == 1) "Delete document?"
+                    else "Delete ${selection.size} documents?",
+                )
+            },
             text = { Text("All their pages will be removed from this device. This cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = { confirmDelete = false; vm.deleteSelected() }) {
@@ -380,13 +425,25 @@ private fun TagChips(
 
 @Composable
 private fun SearchBarField(query: String, onChange: (String) -> Unit) {
+    val keyboard = LocalSoftwareKeyboardController.current
     OutlinedTextField(
         value = query,
         onValueChange = onChange,
         leadingIcon = { Icon(Icons.Default.Search, null) },
+        trailingIcon = if (query.isNotEmpty()) {
+            {
+                IconButton(onClick = { onChange("") }) {
+                    Icon(Icons.Default.Close, "Clear search")
+                }
+            }
+        } else {
+            null
+        },
         placeholder = { Text("Search names and scanned text") },
         singleLine = true,
         shape = RoundedCornerShape(28.dp),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
     )
 }
@@ -398,9 +455,10 @@ private fun DocumentCard(
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     ElevatedCard(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
@@ -433,7 +491,7 @@ private fun DocumentCard(
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
             ) {
                 Text(
-                    "${doc.pageCount}p",
+                    if (doc.pageCount == 1) "1 page" else "${doc.pageCount} pages",
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
@@ -449,16 +507,30 @@ private fun DocumentCard(
                         .size(18.dp),
                 )
             }
-            if (selected) {
+            // Qualified: inside the Card's ColumnScope the unqualified name resolves to
+            // the ColumnScope extension, which can't be used from this nested Box.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = selected,
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(150)),
+                modifier = Modifier.matchParentSize(),
+            ) {
                 Box(
                     Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)),
                 )
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = selected,
+                enter = scaleIn(initialScale = 0.4f) + fadeIn(),
+                exit = scaleOut(targetScale = 0.4f) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+            ) {
                 Icon(
                     Icons.Default.CheckCircle, "Selected",
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                    modifier = Modifier.background(Color.White, CircleShape),
                 )
             }
         }
@@ -498,6 +570,7 @@ private fun DocumentRow(
     onLongClick: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
@@ -570,7 +643,7 @@ private fun DocumentRow(
                 }
             }
         },
-        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
     )
 
     if (showRename) {
@@ -596,30 +669,62 @@ private fun DocumentRow(
 }
 
 @Composable
-private fun EmptyState(searching: Boolean) {
+private fun EmptyState(
+    filtering: Boolean,
+    onScan: () -> Unit,
+    onImportPhotos: () -> Unit,
+    onImportPdf: () -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            Icons.Default.DocumentScanner, null,
-            modifier = Modifier.size(72.dp),
-            tint = MaterialTheme.colorScheme.outlineVariant,
-        )
-        Spacer(Modifier.height(16.dp))
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Icon(
+                Icons.Default.DocumentScanner, null,
+                modifier = Modifier.padding(24.dp).size(44.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+        Spacer(Modifier.height(20.dp))
         Text(
-            if (searching) "No matches" else "No documents yet",
+            if (filtering) "No matches" else "No documents yet",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            if (searching) "Try a different search term."
-            else "Tap Scan to capture your first document. Everything stays on your device.",
+            if (filtering) "Try a different search term, or clear the filters above."
+            else "Scan a paper document or bring in existing files. " +
+                "Everything stays on your device.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
+        if (!filtering) {
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = onScan) {
+                Icon(Icons.Default.DocumentScanner, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Scan a document")
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onImportPhotos) {
+                    Icon(Icons.Default.AddPhotoAlternate, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import photos")
+                }
+                TextButton(onClick = onImportPdf) {
+                    Icon(Icons.Default.PictureAsPdf, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import PDF")
+                }
+            }
+        }
     }
 }

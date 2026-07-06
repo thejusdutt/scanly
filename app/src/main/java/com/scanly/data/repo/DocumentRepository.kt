@@ -62,6 +62,7 @@ class DocumentRepository @Inject constructor(
                 orderIndex = order,
                 imagePath = imagePath,
                 originalPath = originalPath,
+                cropQuad = quad.serialize(),
                 filter = filter,
             ),
         ).also { touch(documentId) }
@@ -115,6 +116,7 @@ class DocumentRepository @Inject constructor(
             page.copy(
                 imagePath = imagePath,
                 originalPath = originalPath,
+                cropQuad = quad.serialize(),
                 rotationDeg = 0,
                 ocrStatus = OcrStatus.NONE,
                 ocrText = null,
@@ -124,13 +126,25 @@ class DocumentRepository @Inject constructor(
         page.documentId
     }
 
-    /** Re-apply a filter to an existing page from its original capture. */
+    /**
+     * Re-apply a filter to an existing page from its original capture, re-warping with
+     * the page's stored crop first. (Without the warp, every filter change silently
+     * replaced a neatly cropped page with the full uncropped capture.) Pages whose
+     * original is already flat — book halves, whiteboard, imports, legacy rows — have
+     * no stored crop and use the original as-is.
+     */
     suspend fun changeFilter(pageId: Long, filter: Filter) = withContext(Dispatchers.Default) {
         val page = dao.getPage(pageId) ?: return@withContext
         val originalPath = page.originalPath ?: return@withContext
         val original = android.graphics.BitmapFactory.decodeFile(originalPath) ?: return@withContext
-        val processed = ImageProcessing.applyFilter(original, filter)
-        original.recycle()
+        val quad = page.cropQuad?.let { DocumentQuad.deserialize(it) }
+        val base = if (quad != null) {
+            ImageProcessing.warp(original, quad).also { original.recycle() }
+        } else {
+            original
+        }
+        val processed = ImageProcessing.applyFilter(base, filter)
+        if (processed !== base) base.recycle()
         storage.deletePage(page.imagePath)
         val newPath = storage.savePageImage(page.documentId, processed)
         processed.recycle()
@@ -151,7 +165,12 @@ class DocumentRepository @Inject constructor(
         val newPath = storage.savePageImage(page.documentId, processed)
         processed.recycle()
         dao.updatePage(
-            page.copy(imagePath = newPath, ocrStatus = OcrStatus.NONE, ocrText = null),
+            page.copy(
+                imagePath = newPath,
+                cropQuad = quad.serialize(),
+                ocrStatus = OcrStatus.NONE,
+                ocrText = null,
+            ),
         )
         touch(page.documentId)
     }

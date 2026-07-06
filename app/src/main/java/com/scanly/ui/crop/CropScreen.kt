@@ -65,7 +65,11 @@ class CropViewModel @Inject constructor(
             val page = repository.getPage(pageId) ?: return@launch
             val path = page.originalPath ?: return@launch
             val bmp = BitmapFactory.decodeFile(path) ?: return@launch
-            val quad = detector.detect(bmp) ?: DocumentQuad.full(bmp.width, bmp.height)
+            // Start from the crop that's actually applied, so the handles show what the
+            // user has — not a fresh detection that may disagree with it.
+            val quad = page.cropQuad?.let { DocumentQuad.deserialize(it) }
+                ?: detector.detect(bmp)
+                ?: DocumentQuad.full(bmp.width, bmp.height)
             _state.value = CropState(path, bmp.width, bmp.height, quad)
             bmp.recycle()
         }

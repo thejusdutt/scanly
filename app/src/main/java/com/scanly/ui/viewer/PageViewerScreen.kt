@@ -20,6 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
@@ -77,6 +79,7 @@ fun PageViewerScreen(
         pageCount = { pages.size },
     )
     val current = pages.getOrNull(pagerState.currentPage)
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = Color.Black,
@@ -102,7 +105,7 @@ fun PageViewerScreen(
                     ) {
                         Icon(Icons.Default.Crop, "Adjust crop")
                     }
-                    IconButton(onClick = { current?.let { vm.delete(it.id) } }) {
+                    IconButton(onClick = { confirmDelete = true }) {
                         Icon(Icons.Default.Delete, "Delete page")
                     }
                 },
@@ -117,27 +120,69 @@ fun PageViewerScreen(
             ZoomablePage(imagePath = pages[index].imagePath)
         }
     }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this page?") },
+            text = { Text("The page is removed from this device. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    current?.let { vm.delete(it.id) }
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable
 private fun ZoomablePage(imagePath: String) {
     var scale by remember(imagePath) { mutableStateOf(1f) }
     var offset by remember(imagePath) { mutableStateOf(Offset.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Keep the zoomed content on screen: with center-origin scaling each edge can move
+    // out by at most half the overflow, so the pan is clamped to that box.
+    fun clampOffset(o: Offset, s: Float): Offset {
+        if (s <= 1f || boxSize == IntSize.Zero) return Offset.Zero
+        val maxX = boxSize.width * (s - 1f) / 2f
+        val maxY = boxSize.height * (s - 1f) / 2f
+        return Offset(o.x.coerceIn(-maxX, maxX), o.y.coerceIn(-maxY, maxY))
+    }
 
     Box(
         Modifier
             .fillMaxSize()
+            .onSizeChanged { boxSize = it }
             .pointerInput(imagePath) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 6f)
-                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 6f)
+                    // Zoom about the pinch centroid: the content under the fingers
+                    // stays under the fingers instead of sliding toward the center.
+                    val center = Offset(boxSize.width / 2f, boxSize.height / 2f)
+                    val d = centroid - center
+                    val newOffset = d - (d - offset) * (newScale / scale) + pan
+                    scale = newScale
+                    offset = clampOffset(newOffset, newScale)
                 }
             }
             .pointerInput(imagePath) {
                 detectTapGestures(
-                    onDoubleTap = {
-                        scale = if (scale > 1f) 1f else 2.5f
-                        offset = Offset.Zero
+                    onDoubleTap = { tap ->
+                        if (scale > 1f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            // Zoom toward the tapped spot, not the page center.
+                            val newScale = 2.5f
+                            val center = Offset(boxSize.width / 2f, boxSize.height / 2f)
+                            scale = newScale
+                            offset = clampOffset((center - tap) * newScale, newScale)
+                        }
                     },
                 )
             },

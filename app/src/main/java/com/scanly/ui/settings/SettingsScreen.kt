@@ -1,18 +1,22 @@
 package com.scanly.ui.settings
 
 import android.app.Activity
+import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -21,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.scanly.BuildConfig
 import com.scanly.R
+import com.scanly.data.prefs.ThemeMode
 import com.scanly.platform.TipState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +51,48 @@ fun SettingsScreen(
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
+            // --- Appearance ---
+            SectionHeader("Appearance")
+            val themeMode by vm.themeMode.collectAsState()
+            ListItem(
+                leadingContent = { Icon(Icons.Default.BrightnessMedium, null) },
+                headlineContent = { Text("Theme") },
+                supportingContent = {
+                    SingleChoiceSegmentedButtonRow(
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
+                    ) {
+                        ThemeMode.entries.forEachIndexed { index, mode ->
+                            SegmentedButton(
+                                selected = themeMode == mode,
+                                onClick = { vm.setThemeMode(mode) },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index, count = ThemeMode.entries.size,
+                                ),
+                            ) {
+                                Text(
+                                    when (mode) {
+                                        ThemeMode.SYSTEM -> "System"
+                                        ThemeMode.LIGHT -> "Light"
+                                        ThemeMode.DARK -> "Dark"
+                                    },
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val dynamicColor by vm.dynamicColor.collectAsState()
+                ListItem(
+                    leadingContent = { Icon(Icons.Default.Palette, null) },
+                    headlineContent = { Text("Dynamic colors") },
+                    supportingContent = { Text("Use colors from your wallpaper") },
+                    trailingContent = {
+                        Switch(checked = dynamicColor, onCheckedChange = vm::setDynamicColor)
+                    },
+                )
+            }
+
             // --- Security ---
             SectionHeader("Security")
             val appLock by vm.appLockEnabled.collectAsState()
@@ -118,6 +165,15 @@ fun SettingsScreen(
                     supportingContent = { Text("No ads, no tracking, no internet permission.") },
                 )
             }
+
+            Text(
+                "Scanly ${BuildConfig.VERSION_NAME} · ${BuildConfig.FLAVOR}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(vertical = 24.dp),
+            )
         }
     }
 }

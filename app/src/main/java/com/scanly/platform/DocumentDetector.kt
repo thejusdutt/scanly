@@ -19,6 +19,9 @@ data class DocumentQuad(
 ) {
     val corners: List<QuadPoint> get() = listOf(topLeft, topRight, bottomRight, bottomLeft)
 
+    /** Compact "x,y,x,y,x,y,x,y" form for persistence (see PageEntity.cropQuad). */
+    fun serialize(): String = corners.joinToString(",") { "${it.x},${it.y}" }
+
     companion object {
         /** Full-frame fallback when nothing is detected. */
         fun full(width: Int, height: Int) = DocumentQuad(
@@ -27,6 +30,18 @@ data class DocumentQuad(
             QuadPoint(width.toFloat(), height.toFloat()),
             QuadPoint(0f, height.toFloat()),
         )
+
+        /** Inverse of [serialize]; null on malformed input. */
+        fun deserialize(s: String): DocumentQuad? = runCatching {
+            val v = s.split(',').map { it.toFloat() }
+            require(v.size == 8) { "expected 8 floats" }
+            DocumentQuad(
+                QuadPoint(v[0], v[1]),
+                QuadPoint(v[2], v[3]),
+                QuadPoint(v[4], v[5]),
+                QuadPoint(v[6], v[7]),
+            )
+        }.getOrNull()
     }
 }
 

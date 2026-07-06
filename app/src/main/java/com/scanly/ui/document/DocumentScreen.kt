@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import com.scanly.data.db.OcrStatus
 import com.scanly.data.db.PageEntity
+import com.scanly.ui.common.rememberHaptics
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,8 +64,10 @@ fun DocumentScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showWatermark by remember { mutableStateOf(false) }
     var showTags by remember { mutableStateOf(false) }
+    var confirmDeletePages by remember { mutableStateOf(false) }
     /** Page multi-select for split/delete; empty = normal browsing. */
     var selectedPages by remember { mutableStateOf(setOf<Long>()) }
+    val haptics = rememberHaptics()
 
     // Per-document lock gate: nothing of a locked document renders until the user
     // passes the device credential/biometric prompt (once per process session).
@@ -210,10 +213,7 @@ fun DocumentScreen(
                         }) {
                             Icon(Icons.Default.CallSplit, "Move to new document")
                         }
-                        IconButton(onClick = {
-                            vm.deletePages(selectedPages.toList())
-                            selectedPages = emptySet()
-                        }) {
+                        IconButton(onClick = { confirmDeletePages = true }) {
                             Icon(Icons.Default.Delete, "Delete selected pages")
                         }
                     },
@@ -231,6 +231,8 @@ fun DocumentScreen(
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Default.MoreVert, "More")
                     }
+                    // Grouped by intent — output, contacts, organize, protect/danger —
+                    // so twelve actions read as four short lists instead of one wall.
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(
                             text = { Text("Copy text") },
@@ -252,6 +254,17 @@ fun DocumentScreen(
                             onClick = { showMenu = false; vm.requestPrint() },
                         )
                         DropdownMenuItem(
+                            text = { Text("Share as long image") },
+                            leadingIcon = { Icon(Icons.Default.Panorama, null) },
+                            onClick = { showMenu = false; vm.requestLongImage() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share text (.txt)") },
+                            leadingIcon = { Icon(Icons.Default.Description, null) },
+                            onClick = { showMenu = false; vm.requestText() },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
                             text = { Text(stringResource(R.string.add_to_contacts)) },
                             leadingIcon = { Icon(Icons.Default.PersonAdd, null) },
                             onClick = {
@@ -270,26 +283,28 @@ fun DocumentScreen(
                             leadingIcon = { Icon(Icons.Default.ContactPage, null) },
                             onClick = { showMenu = false; vm.shareVCard() },
                         )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("Add watermark…") },
                             leadingIcon = { Icon(Icons.Default.BrandingWatermark, null) },
                             onClick = { showMenu = false; showWatermark = true },
                         )
                         DropdownMenuItem(
-                            text = { Text("Share as long image") },
-                            leadingIcon = { Icon(Icons.Default.Panorama, null) },
-                            onClick = { showMenu = false; vm.requestLongImage() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share text (.txt)") },
-                            leadingIcon = { Icon(Icons.Default.Description, null) },
-                            onClick = { showMenu = false; vm.requestText() },
-                        )
-                        DropdownMenuItem(
                             text = { Text("Edit tags…") },
                             leadingIcon = { Icon(Icons.Default.Label, null) },
                             onClick = { showMenu = false; showTags = true },
                         )
+                        DropdownMenuItem(
+                            text = { Text("Move to folder…") },
+                            leadingIcon = { Icon(Icons.Default.Folder, null) },
+                            onClick = { showMenu = false; showFolder = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rename") },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            onClick = { showMenu = false; showRename = true },
+                        )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -307,18 +322,15 @@ fun DocumentScreen(
                             onClick = { showMenu = false; vm.toggleLock() },
                         )
                         DropdownMenuItem(
-                            text = { Text("Move to folder…") },
-                            leadingIcon = { Icon(Icons.Default.Folder, null) },
-                            onClick = { showMenu = false; showFolder = true },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Rename") },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) },
-                            onClick = { showMenu = false; showRename = true },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete") },
-                            leadingIcon = { Icon(Icons.Default.Delete, null) },
+                            text = {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Delete, null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            },
                             onClick = { showMenu = false; showDeleteConfirm = true },
                         )
                     }
@@ -330,19 +342,15 @@ fun DocumentScreen(
         bottomBar = {
             BottomAppBar(
                 actions = {
-                    IconButton(onClick = { onAddPages(documentId) }) {
-                        Icon(Icons.Default.AddAPhoto, "Add pages")
-                    }
-                    IconButton(onClick = vm::runOcr) {
-                        Icon(Icons.Default.TextFields, "Run OCR")
-                    }
-                    IconButton(onClick = onAddSignature) {
-                        Icon(Icons.Default.Draw, stringResource(R.string.title_signature))
-                    }
+                    // Labeled, not bare icons: "OCR from a text-fields glyph" is a
+                    // guess nobody should have to make.
+                    BottomBarAction(Icons.Default.AddAPhoto, "Add") { onAddPages(documentId) }
+                    BottomBarAction(Icons.Default.TextFields, "OCR", onClick = vm::runOcr)
+                    BottomBarAction(Icons.Default.Draw, "Sign", onClick = onAddSignature)
                 },
                 floatingActionButton = {
                     ExtendedFloatingActionButton(
-                        onClick = { showExport = true },
+                        onClick = { if (!busy) showExport = true },
                         icon = { Icon(Icons.Default.IosShare, null) },
                         text = { Text("Export") },
                     )
@@ -362,6 +370,7 @@ fun DocumentScreen(
                 val index = pages.indexOf(page)
                 PageTile(
                     page = page,
+                    pageNumber = index + 1,
                     selected = page.id in selectedPages,
                     onClick = {
                         if (selectedPages.isNotEmpty()) {
@@ -373,10 +382,12 @@ fun DocumentScreen(
                         }
                     },
                     onLongClick = {
+                        haptics.longPress()
                         selectedPages =
                             if (page.id in selectedPages) selectedPages - page.id
                             else selectedPages + page.id
                     },
+                    modifier = Modifier.animateItem(),
                 )
             }
         }
@@ -428,6 +439,29 @@ fun DocumentScreen(
             current = doc?.document?.folder,
             onConfirm = { vm.setFolder(it); showFolder = false },
             onDismiss = { showFolder = false },
+        )
+    }
+
+    if (confirmDeletePages) {
+        AlertDialog(
+            onDismissRequest = { confirmDeletePages = false },
+            title = {
+                Text(
+                    if (selectedPages.size == 1) "Delete this page?"
+                    else "Delete ${selectedPages.size} pages?",
+                )
+            },
+            text = { Text("The pages are removed from this device. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeletePages = false
+                    vm.deletePages(selectedPages.toList())
+                    selectedPages = emptySet()
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeletePages = false }) { Text("Cancel") }
+            },
         )
     }
 
@@ -738,11 +772,13 @@ private fun contactInsertIntent(c: com.scanly.common.ContactParser.Contact): Int
 @Composable
 private fun PageTile(
     page: PageEntity,
+    pageNumber: Int,
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    ElevatedCard {
+    ElevatedCard(modifier) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -752,10 +788,23 @@ private fun PageTile(
         ) {
             AsyncImage(
                 model = page.imagePath,
-                contentDescription = "Page ${page.orderIndex + 1}",
+                contentDescription = "Page $pageNumber",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
+            // Page number, so "delete page 3" doesn't require counting tiles.
+            Surface(
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.align(Alignment.TopStart).padding(6.dp),
+            ) {
+                Text(
+                    "$pageNumber",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
             OcrBadge(page.ocrStatus, Modifier.align(Alignment.BottomStart).padding(6.dp))
             if (selected) {
                 Box(
@@ -770,6 +819,25 @@ private fun PageTile(
                 )
             }
         }
+    }
+}
+
+/** Icon-over-label bottom-bar action, matching the Review screen's toolbar idiom. */
+@Composable
+private fun BottomBarAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Icon(icon, label)
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 

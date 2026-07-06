@@ -2,7 +2,9 @@ package com.scanly.ui.settings
 
 import android.app.Activity
 import androidx.lifecycle.ViewModel
+import com.scanly.data.prefs.AppearancePrefs
 import com.scanly.data.prefs.SecurityPrefs
+import com.scanly.data.prefs.ThemeMode
 import com.scanly.platform.TipJar
 import com.scanly.platform.TipState
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -14,10 +16,17 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val tipJar: TipJar,
     private val securityPrefs: SecurityPrefs,
+    private val appearancePrefs: AppearancePrefs,
 ) : ViewModel() {
     val tipState: Flow<TipState> = tipJar.state
     fun tip(activity: Activity) = tipJar.launchTip(activity)
 
     val appLockEnabled: StateFlow<Boolean> = securityPrefs.appLockEnabled
     fun setAppLock(enabled: Boolean) = securityPrefs.setAppLockEnabled(enabled)
+
+    val themeMode: StateFlow<ThemeMode> = appearancePrefs.themeMode
+    fun setThemeMode(mode: ThemeMode) = appearancePrefs.setThemeMode(mode)
+
+    val dynamicColor: StateFlow<Boolean> = appearancePrefs.dynamicColor
+    fun setDynamicColor(enabled: Boolean) = appearancePrefs.setDynamicColor(enabled)
 }
