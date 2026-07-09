@@ -13,7 +13,7 @@ These are not negotiable — PRs that violate them won't be merged:
 3. **No subscriptions and no feature paywalls.** The optional tip jar is a *tip*; every
    feature works without it.
 4. **No watermarks on any output.**
-5. **Proprietary deps stay in `gplay`.** Anything not GPL-3-compatible (ML Kit, Billing)
+5. **Proprietary deps stay in `gplay`.** Anything proprietary (ML Kit, Billing)
    must sit behind a `platform/` interface with a working FOSS implementation.
 
 ## Dev setup

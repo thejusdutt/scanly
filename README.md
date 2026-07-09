@@ -9,8 +9,8 @@ locally** behind subscriptions, stamp watermarks on exports, run ads, require ac
 and ship scans of your passport and medical records to someone else's servers.
 
 Scanly is the alternative that should exist: everything runs on-device, nothing is
-gated, no ads, no account, no watermark — and the code is open (GPL-3.0-or-later) so it
-can never be acquired-and-enshittified.
+gated, no ads, no account, no watermark — and the code is open (MIT) so anyone can
+fork it, ship it, or build on it.
 
 ## Principles (non-negotiable)
 
@@ -23,7 +23,7 @@ can never be acquired-and-enshittified.
    integration. Export goes through the Android share sheet and the Storage Access
    Framework — which can write straight into Drive/Dropbox/Nextcloud via their *system
    file providers*, without Scanly ever holding a network permission or a token.
-4. **Open source, copyleft.** GPL-3.0-or-later, so a future owner can't close it.
+4. **Open source, permissive.** MIT-licensed — free to use, fork, and redistribute.
 5. **It won't disappear.** No proprietary core dependency; the OpenCV + Tesseract +
    PdfBox pipeline is fully free software.
 
@@ -92,4 +92,4 @@ privacy claim is machine-checked, not marketing.
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](LICENSE).

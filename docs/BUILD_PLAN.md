@@ -1,13 +1,13 @@
 # Scanly — Build Plan
 
-How we build it: the technology choices (with licenses, because this is GPL-3 OSS),
+How we build it: the technology choices (with licenses, because this is MIT-licensed OSS),
 the architecture, and a phased roadmap with shippable milestones.
 
 ---
 
 ## 1. Technology stack & library choices
 
-All core libraries are permissively licensed and GPL-3-compatible. Proprietary options
+All core libraries are permissively licensed and MIT-compatible. Proprietary options
 are isolated to the `gplay` flavor and never required for a working app.
 
 ### Core (both flavors)
@@ -94,7 +94,7 @@ Each phase is independently shippable/testable. Target: a usable MVP by end of P
 
 ### Phase 0 — Foundation (scaffold)
 - Kotlin + Compose project, Hilt, Material 3, `foss`/`gplay` product flavors.
-- GPL-3 LICENSE, README, CONTRIBUTING, CI (build + lint + unit tests), `.editorconfig`.
+- MIT LICENSE, README, CONTRIBUTING, CI (build + lint + unit tests), `.editorconfig`.
 - CI gate: `foss` build must have no INTERNET permission and no Play-Services deps.
 - **Done when:** both flavors build green in CI; empty app launches.
 
@@ -166,7 +166,7 @@ Each phase is independently shippable/testable. Target: a usable MVP by end of P
 | APK size (OpenCV + Tesseract native libs) | ABI splits, on-demand language packs, R8 |
 | "Android users expect free" → no revenue | Treat as reputation/OSS; optional one-time tip only; zero server cost = sustainable |
 | Play donation-link rejection | No donation links in binary; funding pointers in README/listing only |
-| Maintenance burden over time | Copyleft + community contributions; minimal moving parts; no backend to operate |
+| Maintenance burden over time | Permissive license + community contributions; minimal moving parts; no backend to operate |
 
 ---
 
