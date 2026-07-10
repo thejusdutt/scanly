@@ -1,8 +1,12 @@
 package com.scanly.ui.capture
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
@@ -29,6 +33,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,6 +53,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Grid3x3
 import androidx.compose.material.icons.filled.MotionPhotosAuto
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -57,6 +63,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -73,6 +80,7 @@ import coil.compose.AsyncImage
 import com.scanly.R
 import com.scanly.platform.DocumentQuad
 import com.scanly.ui.common.rememberHaptics
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -96,14 +104,48 @@ fun CaptureScreen(
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+    var permissionDenied by remember { mutableStateOf(false) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> hasCamera = granted }
+    ) { granted ->
+        hasCamera = granted
+        if (!granted) permissionDenied = true
+    }
 
     LaunchedEffect(Unit) { if (!hasCamera) permLauncher.launch(Manifest.permission.CAMERA) }
 
+    // Re-check on resume so granting the permission in system settings takes effect
+    // the moment the user comes back, without restarting the screen.
+    val permLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(permLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                hasCamera = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA,
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        permLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { permLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     if (!hasCamera) {
-        CameraRationale(onGrant = { permLauncher.launch(Manifest.permission.CAMERA) })
+        CameraRationale(
+            // After a denial the system dialog may never show again ("don't ask
+            // again") — offer the app-settings deep link as the recovery path.
+            showOpenSettings = permissionDenied,
+            onGrant = { permLauncher.launch(Manifest.permission.CAMERA) },
+            onOpenSettings = {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null),
+                        ),
+                    )
+                }
+            },
+        )
         return
     }
 
@@ -140,9 +182,23 @@ private fun CameraContent(
     }
     var camera by remember { mutableStateOf<Camera?>(null) }
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
-    var flashMode by remember { mutableStateOf(ImageCapture.FLASH_MODE_OFF) }
-    var showGrid by remember { mutableStateOf(false) }
+    // Flash/grid live in CapturePrefs so the screen reopens the way the user left it.
+    val flashMode by vm.flashMode.collectAsState()
+    val showGrid by vm.showGrid.collectAsState()
     var capturing by remember { mutableStateOf(false) }
+    var cameraError by remember { mutableStateOf(false) }
+    var captureError by remember { mutableStateOf(false) }
+    var showExitDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(flashMode) { imageCapture.flashMode = flashMode }
+    // Surface both screen-level (takePicture) and ViewModel-level (save pipeline)
+    // failures the same transient way, then auto-dismiss.
+    LaunchedEffect(ui.errorCount) { if (ui.errorCount > 0) captureError = true }
+    LaunchedEffect(captureError) {
+        if (captureError) {
+            delay(2600)
+            captureError = false
+        }
+    }
 
     val haptics = rememberHaptics()
     val scope = rememberCoroutineScope()
@@ -177,52 +233,80 @@ private fun CameraContent(
                     }
                     val bmp = image.toUprightBitmap()
                     image.close()
-                    if (bmp != null) vm.onCaptured(bmp)
+                    if (bmp != null) vm.onCaptured(bmp) else captureError = true
                     capturing = false
                 }
-                override fun onError(exc: ImageCaptureException) { capturing = false }
+                override fun onError(exc: ImageCaptureException) {
+                    capturing = false
+                    captureError = true
+                }
             },
         )
+    }
+
+    // Leaving with unsaved pages must be deliberate: X/back asks Save-or-Discard
+    // instead of silently leaving a half-scanned document in the library.
+    fun requestClose() {
+        if (ui.pageCount > 0) showExitDialog = true else onCancel()
+    }
+    BackHandler {
+        when {
+            ui.pendingPreview != null -> vm.retakePendingShot() // back = reject the shot
+            ui.pageCount > 0 -> showExitDialog = true
+            else -> onCancel()
+        }
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 val previewView = PreviewView(ctx).also { previewViewRef = it }
+                // Scanning sessions are long and hands-busy — don't let the screen
+                // time out mid-batch.
+                previewView.keepScreenOn = true
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
-                    val provider = providerFuture.get()
-                    val preview = Preview.Builder()
-                        .setResolutionSelector(ratio43)
-                        .build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
+                    try {
+                        val provider = providerFuture.get()
+                        val preview = Preview.Builder()
+                            .setResolutionSelector(ratio43)
+                            .build().also {
+                                it.surfaceProvider = previewView.surfaceProvider
+                            }
+                        val analysis = ImageAnalysis.Builder()
+                            .setResolutionSelector(ratio43)
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                            // CameraX rotates the RGBA buffer into display orientation
+                            // for us. Without this, frames arrive sensor-landscape on
+                            // phones and every quad the detector finds lands nowhere
+                            // near the document once QuadOverlay maps it onto the
+                            // portrait preview.
+                            .setOutputImageRotationEnabled(true)
+                            .build()
+                        previewView.display?.rotation?.let { analysis.targetRotation = it }
+                        analysis.setAnalyzer(analysisExecutor) { proxy ->
+                            // Detection runs synchronously on this single-threaded
+                            // executor, so the converter can reuse its bitmaps
+                            // frame-to-frame.
+                            val frame = frameConverter.convert(proxy, targetWidth = 480)
+                            proxy.close()
+                            if (frame != null) {
+                                val fire = vm.onPreviewFrame(frame)
+                                if (fire) ContextCompat.getMainExecutor(ctx).execute { capture() }
+                            }
                         }
-                    val analysis = ImageAnalysis.Builder()
-                        .setResolutionSelector(ratio43)
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                        // CameraX rotates the RGBA buffer into display orientation for
-                        // us. Without this, frames arrive sensor-landscape on phones and
-                        // every quad the detector finds lands nowhere near the document
-                        // once QuadOverlay maps it onto the portrait preview.
-                        .setOutputImageRotationEnabled(true)
-                        .build()
-                    previewView.display?.rotation?.let { analysis.targetRotation = it }
-                    analysis.setAnalyzer(analysisExecutor) { proxy ->
-                        // Detection runs synchronously on this single-threaded executor,
-                        // so the converter can reuse its bitmaps frame-to-frame.
-                        val frame = frameConverter.convert(proxy, targetWidth = 480)
-                        proxy.close()
-                        if (frame != null) {
-                            val fire = vm.onPreviewFrame(frame)
-                            if (fire) ContextCompat.getMainExecutor(ctx).execute { capture() }
-                        }
+                        provider.unbindAll()
+                        camera = provider.bindToLifecycle(
+                            lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview, analysis, imageCapture,
+                        )
+                        imageCapture.flashMode = flashMode
+                    } catch (t: Throwable) {
+                        // Camera in use by another app, or no back camera: show a
+                        // message instead of a silent black screen.
+                        cameraError = true
                     }
-                    provider.unbindAll()
-                    camera = provider.bindToLifecycle(
-                        lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview, analysis, imageCapture,
-                    )
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView
             },
@@ -255,6 +339,7 @@ private fun CameraContent(
                 frameWidth = ui.frameWidth,
                 frameHeight = ui.frameHeight,
                 stable = ui.state == CaptureState.STABLE,
+                holdProgress = ui.holdProgress,
             )
         }
         if (showGrid) GridOverlay()
@@ -298,18 +383,19 @@ private fun CameraContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onCancel) {
+            IconButton(onClick = ::requestClose) {
                 Icon(Icons.Default.Close, "Close", tint = Color.White)
             }
             StatusChip(ui)
             Row {
                 IconButton(onClick = {
-                    flashMode = when (flashMode) {
-                        ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
-                        ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
-                        else -> ImageCapture.FLASH_MODE_OFF
-                    }
-                    imageCapture.flashMode = flashMode
+                    vm.setFlashMode(
+                        when (flashMode) {
+                            ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
+                            ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
+                            else -> ImageCapture.FLASH_MODE_OFF
+                        },
+                    )
                 }) {
                     Icon(
                         when (flashMode) {
@@ -320,7 +406,7 @@ private fun CameraContent(
                         stringResource(R.string.flash), tint = Color.White,
                     )
                 }
-                IconButton(onClick = { showGrid = !showGrid }) {
+                IconButton(onClick = vm::toggleGrid) {
                     Icon(
                         Icons.Default.Grid3x3, stringResource(R.string.grid),
                         tint = if (showGrid) Color(0xFFA7E8BD) else Color.White,
@@ -434,7 +520,11 @@ private fun CameraContent(
                 if (ui.mode == CaptureMode.QR) {
                     Spacer(Modifier.size(76.dp)) // QR mode is decode-only, no shutter
                 } else {
-                    Shutter(enabled = !capturing, capturing = capturing, onClick = ::capture)
+                    Shutter(
+                        enabled = !capturing && !ui.processing,
+                        capturing = capturing || ui.processing,
+                        onClick = ::capture,
+                    )
                 }
                 FilledIconButton(
                     onClick = vm::finish,
@@ -445,10 +535,149 @@ private fun CameraContent(
                 }
             }
         }
+
+        // Transient capture-failure notice.
+        if (captureError) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = CircleShape,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 132.dp),
+            ) {
+                Text(
+                    stringResource(R.string.capture_failed),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+        }
+
+        // Camera failed to bind (in use elsewhere / hardware error).
+        if (cameraError) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(32.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    stringResource(R.string.camera_unavailable),
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(onClick = onCancel) { Text(stringResource(R.string.close)) }
+            }
+        }
+
+        // Adobe-style confirm step: the shot is shown exactly as it will be saved
+        // (cropped + deskewed) and nothing is written until the user keeps it.
+        ui.pendingPreview?.let { preview ->
+            ConfirmShotOverlay(
+                preview = preview,
+                onRetake = {
+                    haptics.tick()
+                    vm.retakePendingShot()
+                },
+                onKeep = {
+                    haptics.confirm()
+                    vm.keepPendingShot()
+                },
+            )
+        }
+    }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text(stringResource(R.string.discard_scans_title)) },
+            text = { Text(stringResource(R.string.discard_scans_message, ui.pageCount)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExitDialog = false
+                    vm.finish() // → review, same as tapping Done
+                }) { Text(stringResource(R.string.save_scans)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExitDialog = false
+                    vm.discardSession(onCancel)
+                }) { Text(stringResource(R.string.discard)) }
+            },
+        )
     }
 
     ui.qrResult?.let { result ->
         QrResultSheet(result = result, onDismiss = vm::dismissQr)
+    }
+}
+
+/**
+ * Full-screen KEEP/RETAKE verdict on a just-taken shot. Blocks everything underneath —
+ * the camera keeps running but detection and auto-capture are frozen by the ViewModel
+ * while a shot is pending.
+ */
+@Composable
+private fun ConfirmShotOverlay(
+    preview: Bitmap,
+    onRetake: () -> Unit,
+    onKeep: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.94f))
+            // Consume every tap so nothing reaches tap-to-focus or the shutter below.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {}
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            stringResource(R.string.confirm_scan),
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(vertical = 12.dp),
+        )
+        Image(
+            bitmap = preview.asImageBitmap(),
+            contentDescription = "Captured page preview",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp)),
+        )
+        Spacer(Modifier.height(20.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        ) {
+            OutlinedButton(
+                onClick = onRetake,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.retake))
+            }
+            Button(onClick = onKeep, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.keep_scan))
+            }
+        }
     }
 }
 
@@ -608,6 +837,7 @@ private fun QuadOverlay(
     frameWidth: Int,
     frameHeight: Int,
     stable: Boolean,
+    holdProgress: Float = 0f,
 ) {
     if (quad == null || frameWidth <= 0 || frameHeight <= 0) return
     val color = if (stable) Color(0xFF4CAF50) else Color(0xFFFFC107)
@@ -634,11 +864,40 @@ private fun QuadOverlay(
             drawCircle(Color.White, radius = 16f, center = p)
             drawCircle(color, radius = 11f, center = p)
         }
+
+        // Countdown ring at the quad's center: fills up over the stable-hold window so
+        // the user SEES auto-capture coming and can reframe (or bail) before it fires.
+        if (holdProgress > 0f && holdProgress < 1f) {
+            val cx = pts.fold(0f) { a, p -> a + p.x } / pts.size
+            val cy = pts.fold(0f) { a, p -> a + p.y } / pts.size
+            val r = 46f
+            val topLeft = Offset(cx - r, cy - r)
+            val arcSize = androidx.compose.ui.geometry.Size(r * 2, r * 2)
+            drawArc(
+                color = Color.White.copy(alpha = 0.30f),
+                startAngle = -90f, sweepAngle = 360f, useCenter = false,
+                topLeft = topLeft, size = arcSize,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 7f),
+            )
+            drawArc(
+                color = Color(0xFF4CAF50),
+                startAngle = -90f, sweepAngle = 360f * holdProgress, useCenter = false,
+                topLeft = topLeft, size = arcSize,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = 7f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                ),
+            )
+        }
     }
 }
 
 @Composable
-private fun CameraRationale(onGrant: () -> Unit) {
+private fun CameraRationale(
+    showOpenSettings: Boolean,
+    onGrant: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -647,6 +906,12 @@ private fun CameraRationale(onGrant: () -> Unit) {
         Text(stringResource(R.string.camera_permission_rationale))
         Spacer(Modifier.height(16.dp))
         Button(onClick = onGrant) { Text(stringResource(R.string.grant_camera)) }
+        if (showOpenSettings) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenSettings) {
+                Text(stringResource(R.string.open_settings))
+            }
+        }
     }
 }
 

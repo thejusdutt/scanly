@@ -104,6 +104,42 @@ class CaptureStateMachineTest {
     }
 
     @Test
+    fun holdProgress_ramps_while_steady_and_resets_after_fire() {
+        val m = CaptureStateMachine(stableHoldMs = 800)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        assertThat(m.holdProgress(now = 400)).isWithin(0.01f).of(0.5f)
+        assertThat(m.holdProgress(now = 800)).isEqualTo(1f)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires
+        // Fired: the countdown ring must vanish, not sit at 100 %.
+        assertThat(m.holdProgress(now = 950)).isEqualTo(0f)
+    }
+
+    @Test
+    fun holdProgress_is_zero_for_a_page_that_will_not_fire() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires
+        m.afterCapture(now = 900)
+        // Same page still in frame — disarmed, so no countdown may show.
+        m.onDetection(quad(), now = 1000, autoCapture = true)
+        assertThat(m.holdProgress(now = 1400)).isEqualTo(0f)
+        assertThat(m.holdProgress(now = 60_000)).isEqualTo(0f)
+    }
+
+    @Test
+    fun rearm_lets_the_same_placement_fire_again_after_a_retake() {
+        val m = CaptureStateMachine(stableHoldMs = 800, rearmCooldownMs = 2500)
+        m.onDetection(quad(), now = 0, autoCapture = true)
+        m.onDetection(quad(), now = 900, autoCapture = true) // fires
+        m.afterCapture(now = 900)
+        // User rejects the shot on the confirm overlay: the page hasn't moved, but it
+        // must be capturable again without leaving the frame first.
+        m.rearm()
+        m.onDetection(quad(), now = 1000, autoCapture = true)
+        assertThat(m.onDetection(quad(), now = 1900, autoCapture = true)).isTrue()
+    }
+
+    @Test
     fun movement_resets_stability() {
         val m = CaptureStateMachine(stableHoldMs = 800, movementTolerancePx = 24f)
         m.onDetection(quad(), now = 0, autoCapture = true)

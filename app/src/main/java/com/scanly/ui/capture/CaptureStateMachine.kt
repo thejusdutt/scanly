@@ -23,7 +23,9 @@ enum class CaptureState { IDLE, SEARCHING, STABLE, CAPTURED }
  * Pure logic (no Android deps) so it is unit-testable. See CaptureStateMachineTest.
  */
 class CaptureStateMachine(
-    private val stableHoldMs: Long = 800,
+    // 1.2 s, not a snap: paired with the on-screen countdown ring ([holdProgress]) this
+    // gives the user a visible moment to reframe or bail before auto-capture fires.
+    private val stableHoldMs: Long = 1200,
     private val movementTolerancePx: Float = 24f,
     private val rearmCooldownMs: Long = 2500,
     /** Per-corner movement (vs. the captured page) that counts as a NEW placement. */
@@ -96,6 +98,30 @@ class CaptureStateMachine(
         lastQuad = null
         stableSince = 0
         state = if (batchMode) CaptureState.SEARCHING else CaptureState.CAPTURED
+    }
+
+    /**
+     * Fraction (0..1) of the stable-hold window elapsed for a page that WILL auto-fire
+     * once the window completes; 0 for disarmed or cooling-down pages. Drives the
+     * on-screen countdown ring so auto-capture never feels like a surprise snapshot.
+     */
+    fun holdProgress(now: Long): Float {
+        if (lastQuad == null || !armed || now < cooldownUntil) return 0f
+        return ((now - stableSince).toFloat() / stableHoldMs).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Re-arm for the SAME placement — the user rejected the shot ("Retake" on the
+     * confirm overlay), so the page still in frame must be capturable again without
+     * having to leave the frame first.
+     */
+    fun rearm() {
+        armed = true
+        capturedQuad = null
+        cooldownUntil = 0
+        lastQuad = null
+        stableSince = 0
+        state = CaptureState.SEARCHING
     }
 
     private fun markCaptured(quad: DocumentQuad, now: Long) {

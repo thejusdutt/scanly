@@ -9,9 +9,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MotionPhotosAuto
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
@@ -51,6 +53,31 @@ fun SettingsScreen(
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
+            // --- Scanning ---
+            SectionHeader("Scanning")
+            val reviewEachScan by vm.reviewEachScan.collectAsState()
+            ListItem(
+                leadingContent = { Icon(Icons.Default.FactCheck, null) },
+                headlineContent = { Text("Review each scan") },
+                supportingContent = {
+                    Text("Pause after every capture so you can keep or retake the shot before it's saved")
+                },
+                trailingContent = {
+                    Switch(checked = reviewEachScan, onCheckedChange = vm::setReviewEachScan)
+                },
+            )
+            val autoCapture by vm.autoCapture.collectAsState()
+            ListItem(
+                leadingContent = { Icon(Icons.Default.MotionPhotosAuto, null) },
+                headlineContent = { Text("Auto-capture") },
+                supportingContent = {
+                    Text("Fire the shutter automatically once a document is held steady")
+                },
+                trailingContent = {
+                    Switch(checked = autoCapture, onCheckedChange = vm::setAutoCapture)
+                },
+            )
+
             // --- Appearance ---
             SectionHeader("Appearance")
             val themeMode by vm.themeMode.collectAsState()

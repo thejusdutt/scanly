@@ -11,6 +11,7 @@ import com.scanly.common.RenamePattern
 import com.scanly.cv.BookSplitter
 import com.scanly.cv.ImageProcessing
 import com.scanly.cv.QuadGeometry
+import com.scanly.data.prefs.CapturePrefs
 import com.scanly.data.repo.DocumentRepository
 import com.scanly.domain.RunOcrUseCase
 import com.scanly.platform.DocumentDetector
@@ -19,6 +20,7 @@ import com.scanly.qr.QrDecoder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,6 +60,14 @@ data class CaptureUiState(
     /** True when no document has been detected for a few seconds (Adobe-style hint). */
     val noDocumentHint: Boolean = false,
     val autoCapture: Boolean = true,
+    /** 0..1 countdown toward auto-capture while a page is held steady (ring UI). */
+    val holdProgress: Float = 0f,
+    /** Downscaled look at a shot awaiting the user's KEEP/RETAKE verdict. */
+    val pendingPreview: Bitmap? = null,
+    /** True while a shot is being detected/saved — blocks the shutter and auto-fire. */
+    val processing: Boolean = false,
+    /** Bumped whenever a shot fails to process; the screen surfaces it transiently. */
+    val errorCount: Int = 0,
     /** In ID mode: true once the front side is captured and we're waiting for the back. */
     val idFrontCaptured: Boolean = false,
     val pageCount: Int = 0,
@@ -77,14 +87,28 @@ class CaptureViewModel @Inject constructor(
     private val repository: DocumentRepository,
     private val qrDecoder: QrDecoder,
     private val runOcr: RunOcrUseCase,
+    private val capturePrefs: CapturePrefs,
 ) : ViewModel() {
 
     private val machine = CaptureStateMachine()
     private val stabilizer = QuadStabilizer()
-    private val _ui = MutableStateFlow(CaptureUiState())
+    private val _ui = MutableStateFlow(CaptureUiState(autoCapture = capturePrefs.autoCapture.value))
     val ui = _ui.asStateFlow()
 
+    val flashMode: StateFlow<Int> = capturePrefs.flashMode
+    val showGrid: StateFlow<Boolean> = capturePrefs.showGrid
+
     private var idFront: Bitmap? = null
+
+    /** Full-resolution shot + its crop, held un-saved until the user keeps it. */
+    private class PendingShot(val fullRes: Bitmap, val quad: DocumentQuad, val mode: CaptureMode)
+    private var pending: PendingShot? = null
+
+    /** Set iff THIS session created the document — an X→Discard then deletes it whole. */
+    private var createdDocId: Long? = null
+
+    /** Pages added this session; when appending, Discard removes only these. */
+    private val sessionPageIds = mutableListOf<Long>()
 
     fun init(appendToDocumentId: Long?, retakePageId: Long? = null) {
         _ui.update {
@@ -95,7 +119,14 @@ class CaptureViewModel @Inject constructor(
         }
     }
 
-    fun toggleAuto() = _ui.update { it.copy(autoCapture = !it.autoCapture) }
+    fun toggleAuto() {
+        val next = !_ui.value.autoCapture
+        capturePrefs.setAutoCapture(next)
+        _ui.update { it.copy(autoCapture = next) }
+    }
+
+    fun setFlashMode(mode: Int) = capturePrefs.setFlashMode(mode)
+    fun toggleGrid() = capturePrefs.setShowGrid(!capturePrefs.showGrid.value)
 
     fun setMode(mode: CaptureMode) {
         if (_ui.value.mode == mode) return
@@ -118,11 +149,15 @@ class CaptureViewModel @Inject constructor(
 
     /** Live preview frame (RGBA) → detector. Returns whether to auto-capture now. */
     fun onPreviewFrame(frame: Bitmap, now: Long = System.currentTimeMillis()): Boolean {
-        val mode = _ui.value.mode
+        val current = _ui.value
+        // A shot is mid-processing or awaiting the user's verdict — freeze detection so
+        // auto-capture can't fire a second shot underneath the confirm overlay.
+        if (current.processing || current.pendingPreview != null) return false
+        val mode = current.mode
 
         if (mode == CaptureMode.QR) {
             // Decode-only: pause while a result sheet is showing.
-            if (_ui.value.qrResult == null) {
+            if (current.qrResult == null) {
                 qrDecoder.decode(frame)?.let { text ->
                     _ui.update { it.copy(qrResult = text) }
                 }
@@ -131,7 +166,7 @@ class CaptureViewModel @Inject constructor(
         }
         if (mode == CaptureMode.WHITEBOARD) {
             // Full-frame capture: no boundary, no overlay, manual shutter only.
-            if (_ui.value.liveQuad != null || _ui.value.frameWidth != frame.width) {
+            if (current.liveQuad != null || current.frameWidth != frame.width) {
                 _ui.update {
                     it.copy(liveQuad = null, frameWidth = frame.width, frameHeight = frame.height)
                 }
@@ -144,7 +179,7 @@ class CaptureViewModel @Inject constructor(
         val quad = stabilizer.update(detector.detect(frame), now)
         if (quad != null) lastQuadSeenAt = now
         if (lastQuadSeenAt == 0L) lastQuadSeenAt = now
-        val auto = _ui.value.autoCapture && mode.autoCapturable
+        val auto = current.autoCapture && mode.autoCapturable
         val shouldCapture = machine.onDetection(quad, now, auto)
         _ui.update {
             it.copy(
@@ -153,37 +188,121 @@ class CaptureViewModel @Inject constructor(
                 frameHeight = frame.height,
                 noDocumentHint = quad == null && now - lastQuadSeenAt > 3000,
                 state = machine.state,
+                holdProgress = if (auto) machine.holdProgress(now) else 0f,
             )
         }
         return shouldCapture
     }
 
-    /** Full-resolution capture, routed per mode. */
+    /**
+     * Full-resolution capture. The crop quad is detected ONCE here — whatever preview
+     * the user confirms is exactly what gets saved (re-detecting at save time could
+     * crop differently if the document moved while the confirm overlay was up).
+     */
     fun onCaptured(fullRes: Bitmap) {
+        val mode = _ui.value.mode
+        if (mode == CaptureMode.QR || _ui.value.processing || pending != null) {
+            fullRes.recycle()
+            return
+        }
+        _ui.update { it.copy(processing = true) }
         viewModelScope.launch {
-            when (_ui.value.mode) {
-                CaptureMode.ID_CARD -> onIdCardShot(fullRes)
-                CaptureMode.BOOK -> onBookShot(fullRes)
-                CaptureMode.WHITEBOARD -> onWhiteboardShot(fullRes)
-                CaptureMode.BUSINESS_CARD -> onBusinessCardShot(fullRes)
-                CaptureMode.QR -> fullRes.recycle()
-                CaptureMode.DOCUMENT -> onDocumentShot(fullRes)
+            try {
+                val quad = withContext(Dispatchers.Default) {
+                    if (mode.usesBoundaryDetection) {
+                        // Bias toward the stabilized quad the user was just shown so
+                        // overlay and crop agree; if full-res detection fails outright,
+                        // the shown quad (scaled up) is still a far better crop than
+                        // the whole frame.
+                        val prior = capturePrior(fullRes.width, fullRes.height)
+                        detector.detect(fullRes, prior)
+                            ?: prior
+                            ?: DocumentQuad.full(fullRes.width, fullRes.height)
+                    } else {
+                        DocumentQuad.full(fullRes.width, fullRes.height)
+                    }
+                }
+                if (capturePrefs.reviewEachScan.value) {
+                    val preview = withContext(Dispatchers.Default) {
+                        buildPreview(fullRes, quad, mode)
+                    }
+                    pending = PendingShot(fullRes, quad, mode)
+                    _ui.update { it.copy(pendingPreview = preview, processing = false) }
+                } else {
+                    save(fullRes, quad, mode)
+                }
+            } catch (t: Throwable) {
+                fullRes.recycle()
+                _ui.update { it.copy(processing = false, errorCount = it.errorCount + 1) }
             }
         }
     }
 
-    private suspend fun onDocumentShot(fullRes: Bitmap) {
-        // Re-detect on the full-resolution image for an accurate crop, biased toward
-        // the stabilized quad the user was just shown so overlay and crop agree.
-        // If full-res detection fails outright, the shown quad (scaled up) is still
-        // a far better crop than the whole frame.
-        val prior = capturePrior(fullRes.width, fullRes.height)
-        val quad = withContext(Dispatchers.Default) {
-            detector.detect(fullRes, prior)
-                ?: prior
-                ?: DocumentQuad.full(fullRes.width, fullRes.height)
+    /** User confirmed the pending shot — commit it through the per-mode save path. */
+    fun keepPendingShot() {
+        val p = pending ?: return
+        pending = null
+        _ui.update { it.copy(pendingPreview = null, processing = true) }
+        viewModelScope.launch {
+            try {
+                save(p.fullRes, p.quad, p.mode)
+            } catch (t: Throwable) {
+                p.fullRes.recycle()
+                _ui.update { it.copy(processing = false, errorCount = it.errorCount + 1) }
+            }
         }
+    }
 
+    /** User rejected the pending shot — discard it and re-arm for the same placement. */
+    fun retakePendingShot() {
+        val p = pending ?: return
+        pending = null
+        p.fullRes.recycle()
+        machine.rearm()
+        // The preview bitmap may still be mid-draw in the closing overlay; drop the
+        // reference and let GC reclaim it rather than recycling under the renderer.
+        _ui.update { it.copy(pendingPreview = null, state = machine.state) }
+    }
+
+    private suspend fun save(fullRes: Bitmap, quad: DocumentQuad, mode: CaptureMode) {
+        try {
+            when (mode) {
+                CaptureMode.ID_CARD -> onIdCardShot(fullRes, quad)
+                CaptureMode.BOOK -> onBookShot(fullRes, quad)
+                CaptureMode.WHITEBOARD -> onWhiteboardShot(fullRes)
+                CaptureMode.BUSINESS_CARD -> onBusinessCardShot(fullRes, quad)
+                CaptureMode.QR -> fullRes.recycle()
+                CaptureMode.DOCUMENT -> onDocumentShot(fullRes, quad)
+            }
+        } finally {
+            _ui.update { it.copy(processing = false) }
+        }
+    }
+
+    /**
+     * What the saved page will look like (warped for boundary modes), downscaled for
+     * the confirm overlay. Always a NEW bitmap — never an alias of [fullRes] — so the
+     * pending shot and its preview can be released independently.
+     */
+    private fun buildPreview(fullRes: Bitmap, quad: DocumentQuad, mode: CaptureMode): Bitmap {
+        val flat = if (mode == CaptureMode.WHITEBOARD) fullRes else ImageProcessing.warp(fullRes, quad)
+        val maxSide = maxOf(flat.width, flat.height)
+        val scale = PREVIEW_MAX_SIDE.toFloat() / maxSide
+        val preview = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                flat,
+                (flat.width * scale).toInt().coerceAtLeast(1),
+                (flat.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            flat.copy(Bitmap.Config.ARGB_8888, false)
+        }
+        if (flat !== fullRes && flat !== preview) flat.recycle()
+        return preview
+    }
+
+    private suspend fun onDocumentShot(fullRes: Bitmap, quad: DocumentQuad) {
         val retakeId = _ui.value.retakePageId
         if (retakeId != null) {
             val docId = repository.replacePage(retakeId, fullRes, quad)
@@ -196,16 +315,13 @@ class CaptureViewModel @Inject constructor(
         val docId = ensureDocument("Scan")
         val pageId = repository.addPage(docId, fullRes, quad, Filter.COLOR)
         fullRes.recycle()
+        sessionPageIds += pageId
         afterPagesAdded(docId, added = 1, thumbOf = pageId)
     }
 
     /** Book spread: warp the whole spread, then split it at the spine into two pages. */
-    private suspend fun onBookShot(fullRes: Bitmap) {
-        val prior = capturePrior(fullRes.width, fullRes.height)
+    private suspend fun onBookShot(fullRes: Bitmap, quad: DocumentQuad) {
         val halves: List<Bitmap> = withContext(Dispatchers.Default) {
-            val quad = detector.detect(fullRes, prior)
-                ?: prior
-                ?: DocumentQuad.full(fullRes.width, fullRes.height)
             val spread = ImageProcessing.warp(fullRes, quad).also { fullRes.recycle() }
             val split = BookSplitter.split(spread)
             if (split == null) {
@@ -219,6 +335,7 @@ class CaptureViewModel @Inject constructor(
         var lastId = 0L
         for (half in halves) {
             lastId = repository.addProcessedPage(docId, half, Filter.COLOR)
+            sessionPageIds += lastId
             half.recycle()
         }
         afterPagesAdded(docId, added = halves.size, thumbOf = lastId)
@@ -231,20 +348,16 @@ class CaptureViewModel @Inject constructor(
             repository.addProcessedPage(docId, fullRes, Filter.WHITEBOARD)
         }
         fullRes.recycle()
+        sessionPageIds += pageId
         afterPagesAdded(docId, added = 1, thumbOf = pageId)
     }
 
     /** Business card: single shot, OCR queued immediately for contact extraction. */
-    private suspend fun onBusinessCardShot(fullRes: Bitmap) {
-        val prior = capturePrior(fullRes.width, fullRes.height)
-        val quad = withContext(Dispatchers.Default) {
-            detector.detect(fullRes, prior)
-                ?: prior
-                ?: DocumentQuad.full(fullRes.width, fullRes.height)
-        }
+    private suspend fun onBusinessCardShot(fullRes: Bitmap, quad: DocumentQuad) {
         val docId = ensureDocument("BusinessCard")
-        repository.addPage(docId, fullRes, quad, Filter.COLOR)
+        val pageId = repository.addPage(docId, fullRes, quad, Filter.COLOR)
         fullRes.recycle()
+        sessionPageIds += pageId
         runOcr(docId)
         machine.afterCapture()
         // Cards are one-shot: go straight to review, where "Add to contacts" lives.
@@ -254,12 +367,8 @@ class CaptureViewModel @Inject constructor(
     }
 
     /** ID-card flow: first shot = front, second = back, composed onto one page. */
-    private suspend fun onIdCardShot(fullRes: Bitmap) {
-        val prior = capturePrior(fullRes.width, fullRes.height)
+    private suspend fun onIdCardShot(fullRes: Bitmap, quad: DocumentQuad) {
         val card = withContext(Dispatchers.Default) {
-            val quad = detector.detect(fullRes, prior)
-                ?: prior
-                ?: DocumentQuad.full(fullRes.width, fullRes.height)
             ImageProcessing.warp(fullRes, quad).also { fullRes.recycle() }
         }
         val front = idFront
@@ -272,8 +381,11 @@ class CaptureViewModel @Inject constructor(
         val composed = withContext(Dispatchers.Default) { composeIdPage(front, card) }
         front.recycle(); card.recycle()
         val docId = ensureDocument("IDCard")
-        repository.addPage(docId, composed, DocumentQuad.full(composed.width, composed.height), Filter.COLOR)
+        val pageId = repository.addPage(
+            docId, composed, DocumentQuad.full(composed.width, composed.height), Filter.COLOR,
+        )
         composed.recycle()
+        sessionPageIds += pageId
         _ui.update {
             it.copy(documentId = docId, pageCount = it.pageCount + 1, idFrontCaptured = false)
         }
@@ -282,7 +394,7 @@ class CaptureViewModel @Inject constructor(
 
     private suspend fun ensureDocument(type: String): Long =
         _ui.value.documentId ?: withContext(Dispatchers.IO) {
-            repository.createDocument(defaultName(type))
+            repository.createDocument(defaultName(type)).also { createdDocId = it }
         }
 
     /** Shared post-capture bookkeeping for continuous ("keep scanning") modes. */
@@ -319,14 +431,35 @@ class CaptureViewModel @Inject constructor(
         _ui.update { it.copy(finishedDocumentId = it.documentId) }
     }
 
+    /**
+     * Delete everything THIS session produced (X → Discard): the whole document if we
+     * created it, otherwise just the pages appended to an existing one.
+     */
+    fun discardSession(onDone: () -> Unit) {
+        pending?.fullRes?.recycle(); pending = null
+        viewModelScope.launch {
+            val created = createdDocId
+            if (created != null) {
+                repository.deleteDocument(created)
+            } else {
+                sessionPageIds.forEach { repository.deletePage(it) }
+            }
+            onDone()
+        }
+    }
+
     override fun onCleared() {
         idFront?.recycle(); idFront = null
+        pending?.fullRes?.recycle(); pending = null
     }
 
     private fun defaultName(type: String): String =
         RenamePattern.format(RenamePattern.DEFAULT, type = type)
 
     companion object {
+        /** Long-side cap for the confirm-overlay preview; full-res stays untouched. */
+        private const val PREVIEW_MAX_SIDE = 1600
+
         /**
          * Both card sides stacked on one white A4-proportioned page, like the
          * "ID mode" competitors gate behind a subscription.

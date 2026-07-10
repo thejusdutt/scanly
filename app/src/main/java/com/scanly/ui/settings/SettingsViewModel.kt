@@ -3,6 +3,7 @@ package com.scanly.ui.settings
 import android.app.Activity
 import androidx.lifecycle.ViewModel
 import com.scanly.data.prefs.AppearancePrefs
+import com.scanly.data.prefs.CapturePrefs
 import com.scanly.data.prefs.SecurityPrefs
 import com.scanly.data.prefs.ThemeMode
 import com.scanly.platform.TipJar
@@ -17,6 +18,7 @@ class SettingsViewModel @Inject constructor(
     private val tipJar: TipJar,
     private val securityPrefs: SecurityPrefs,
     private val appearancePrefs: AppearancePrefs,
+    private val capturePrefs: CapturePrefs,
 ) : ViewModel() {
     val tipState: Flow<TipState> = tipJar.state
     fun tip(activity: Activity) = tipJar.launchTip(activity)
@@ -29,4 +31,10 @@ class SettingsViewModel @Inject constructor(
 
     val dynamicColor: StateFlow<Boolean> = appearancePrefs.dynamicColor
     fun setDynamicColor(enabled: Boolean) = appearancePrefs.setDynamicColor(enabled)
+
+    val reviewEachScan: StateFlow<Boolean> = capturePrefs.reviewEachScan
+    fun setReviewEachScan(enabled: Boolean) = capturePrefs.setReviewEachScan(enabled)
+
+    val autoCapture: StateFlow<Boolean> = capturePrefs.autoCapture
+    fun setAutoCapture(enabled: Boolean) = capturePrefs.setAutoCapture(enabled)
 }

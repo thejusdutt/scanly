@@ -17,6 +17,16 @@
     <string name="grid">Grid</string>
     <string name="hold_steady">Hold steady…</string>
     <string name="searching">Looking for a document…</string>
+    <string name="confirm_scan">Use this scan?</string>
+    <string name="keep_scan">Keep</string>
+    <string name="capture_failed">Capture failed — please try again</string>
+    <string name="camera_unavailable">Camera unavailable. Close other camera apps and try again.</string>
+    <string name="close">Close</string>
+    <string name="discard_scans_title">Unsaved scans</string>
+    <string name="discard_scans_message">You have %1$d scanned page(s). Save them as a document, or discard them?</string>
+    <string name="save_scans">Save</string>
+    <string name="discard">Discard</string>
+    <string name="open_settings">Open settings</string>
 
     <!-- Capture modes -->
     <string name="qr_hint">Point at a QR code</string>
